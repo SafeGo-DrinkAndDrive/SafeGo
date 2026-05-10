@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+server/node_modules/
+
+# Build outputs
+dist/
+server/dist/
+
+# Environment files — NEVER commit these
+.env
+.env.local
+.env.production
+server/.env
+
+# Firebase service account keys
+*.json
+!package.json
+!tsconfig.json
+!tsconfig.node.json
+!server/package.json
+!server/tsconfig.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
