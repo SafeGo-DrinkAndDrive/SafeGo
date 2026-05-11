@@ -1,28 +1,22 @@
 // ─── src/services/fareService.ts (CLIENT-SIDE) ───────────────────────────────
-// Uses Google Maps Distance Matrix API directly from the browser.
-// Rate: LKR 1,000 per km (base from the shortest driving route).
-// Falls back to straight-line Haversine × 1.35 if Maps API key is absent.
-// ─────────────────────────────────────────────────────────────────────────────
 import type { LatLng, ServiceType } from '../types';
 
 export interface FareResult {
-  distanceKm:  number;
+  distanceKm:   number;
   durationMins: number;
   fare:         number;
   breakdown: {
-    ratePerKm:    number;
-    distanceKm:   number;
-    baseCharge:   number;
+    ratePerKm:      number;
+    distanceKm:     number;
+    baseCharge:     number;
     distanceCharge: number;
-    total:        number;
+    total:          number;
   };
 }
 
-// ── Rates (LKR) ───────────────────────────────────────────────────────────────
-const RATE_PER_KM   = 1000;   // will be configurable later
-const BASE_CHARGE   = 0;      // no flat base for now
+const RATE_PER_KM = 1000;
+const BASE_CHARGE = 0;
 
-// Hourly / Full Day flat rates (for non-Distance services)
 const HOURLY_RATES: Record<string, number> = {
   '1h': 2500, '2h': 3500, '3h': 4500,
   '4h': 5500, '6h': 7000, '12h': 12000,
@@ -31,8 +25,6 @@ const FULLDAY_RATES: Record<string, number> = {
   '4h': 5000, '6h': 7000, '8h': 9000,
   '10h': 11000, '12h': 13000,
 };
-
-// ── Distance Matrix via Google Maps JS SDK ────────────────────────────────────
 
 function waitForMaps(): Promise<void> {
   return new Promise((resolve) => {
@@ -52,7 +44,6 @@ async function getRealDistance(
 ): Promise<{ distanceKm: number; durationMins: number }> {
   const key = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
   if (!key) {
-    // Haversine fallback
     const km = haversineKm(origin, destination) * 1.35;
     return { distanceKm: Math.round(km * 10) / 10, durationMins: Math.round(km * 2) };
   }
@@ -68,7 +59,10 @@ async function getRealDistance(
         travelMode:   google.maps.TravelMode.DRIVING,
         unitSystem:   google.maps.UnitSystem.METRIC,
       },
-      (result, status) => {
+      (
+        result: google.maps.DistanceMatrixResponse | null,
+        status: google.maps.DistanceMatrixStatus,
+      ) => {
         if (status !== 'OK' || !result) {
           reject(new Error(`Distance Matrix error: ${status}`));
           return;
@@ -78,7 +72,7 @@ async function getRealDistance(
           reject(new Error('Could not calculate route between selected locations.'));
           return;
         }
-        const distanceKm  = element.distance.value / 1000;
+        const distanceKm   = element.distance.value / 1000;
         const durationMins = Math.round(element.duration.value / 60);
         resolve({
           distanceKm:   Math.round(distanceKm * 10) / 10,
@@ -88,8 +82,6 @@ async function getRealDistance(
     );
   });
 }
-
-// ── Main export ───────────────────────────────────────────────────────────────
 
 export async function calculateFareForDistance(
   origin:      LatLng,
@@ -137,23 +129,25 @@ export function calculateFlatFare(
   };
 }
 
-// ── Reverse geocoding — coords → address string ───────────────────────────────
-
 export async function reverseGeocode(lat: number, lng: number): Promise<string> {
   await waitForMaps();
   return new Promise((resolve, reject) => {
     const geocoder = new google.maps.Geocoder();
-    geocoder.geocode({ location: { lat, lng } }, (results, status) => {
-      if (status === 'OK' && results && results[0]) {
-        resolve(results[0].formatted_address);
-      } else {
-        reject(new Error(`Geocoding failed: ${status}`));
-      }
-    });
+    geocoder.geocode(
+      { location: { lat, lng } },
+      (
+        results: google.maps.GeocoderResult[] | null,
+        status:  google.maps.GeocoderStatus,
+      ) => {
+        if (status === 'OK' && results && results[0]) {
+          resolve(results[0].formatted_address);
+        } else {
+          reject(new Error(`Geocoding failed: ${status}`));
+        }
+      },
+    );
   });
 }
-
-// ── Haversine fallback ────────────────────────────────────────────────────────
 
 function haversineKm(a: LatLng, b: LatLng): number {
   const R    = 6371;

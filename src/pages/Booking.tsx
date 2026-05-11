@@ -1,15 +1,9 @@
 // ─── src/pages/Booking.tsx ────────────────────────────────────────────────────
-// Full booking flow — all client-side, no backend required.
-//   • Google Places autocomplete for pickup + drop
-//   • "Use My Location" button → geolocation + reverse geocode
-//   • Live fare card (Google Maps Distance Matrix → LKR 1,000/km)
-//   • Saves directly to Firestore → navigates to /booking-success
-// ─────────────────────────────────────────────────────────────────────────────
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  MapPin, Navigation, Calendar, Clock, Car,
+  MapPin, Navigation, Clock, Car,
   AlertCircle, Loader2, Locate, LocateFixed,
   Route, Receipt, TrendingUp,
 } from 'lucide-react';
@@ -39,7 +33,6 @@ const FareCard: React.FC<{ fare: FareResult; serviceType: ServiceType }> = ({
     exit={{ opacity: 0, y: -8 }}
   >
     <GlassCard glowColor="red" className="overflow-hidden">
-      {/* Header */}
       <div className="flex items-center gap-2 mb-5 pb-4 border-b border-white/8">
         <div className="p-2 bg-brand-red/15 rounded-lg">
           <Receipt className="w-4 h-4 text-brand-red" />
@@ -50,7 +43,6 @@ const FareCard: React.FC<{ fare: FareResult; serviceType: ServiceType }> = ({
         </div>
       </div>
 
-      {/* Stats */}
       <div className="space-y-3 mb-5">
         {serviceType === 'Distance' && (
           <>
@@ -102,7 +94,6 @@ const FareCard: React.FC<{ fare: FareResult; serviceType: ServiceType }> = ({
         )}
       </div>
 
-      {/* Total */}
       <div className="bg-gradient-to-r from-brand-red/15 to-brand-red/5 border border-brand-red/25 rounded-xl p-4 flex items-center justify-between">
         <div>
           <p className="text-xs text-text-sub mb-0.5">Total Fare</p>
@@ -125,31 +116,24 @@ export const Booking: React.FC = () => {
   const { user } = useAuth();
   const { createBooking } = useBookings();
 
-  // ── Location state ────────────────────────────────────────────────────────
   const [pickup,  setPickup]  = useState<PlaceResult | null>(null);
   const [dropoff, setDropoff] = useState<PlaceResult | null>(null);
 
-  // ── Service options ───────────────────────────────────────────────────────
   const [serviceType,   setServiceType]   = useState<ServiceType>('Distance');
   const [serviceDetail, setServiceDetail] = useState('2h');
   const [scheduledDate, setScheduledDate] = useState('');
   const [scheduledTime, setScheduledTime] = useState('');
 
-  // ── Geolocation ───────────────────────────────────────────────────────────
   const [locating, setLocating] = useState(false);
   const [locError, setLocError] = useState<string | null>(null);
 
-  // ── Fare ──────────────────────────────────────────────────────────────────
   const [fareResult,  setFareResult]  = useState<FareResult | null>(null);
   const [calculating, setCalculating] = useState(false);
   const [fareError,   setFareError]   = useState<string | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
 
-  // ── Booking ───────────────────────────────────────────────────────────────
   const [isBooking,  setIsBooking]  = useState(false);
   const [bookingErr, setBookingErr] = useState<string | null>(null);
-
-  // ── Auto-calculate fare when inputs change ────────────────────────────────
 
   const recalcFare = useCallback((
     p: PlaceResult | null, d: PlaceResult | null,
@@ -165,15 +149,14 @@ export const Booking: React.FC = () => {
         try {
           const result = await calculateFareForDistance(p.coords, d.coords);
           setFareResult(result);
-        } catch (err: any) {
-          setFareError(err.message ?? 'Could not calculate distance.');
+        } catch (err: unknown) {
+          setFareError(err instanceof Error ? err.message : 'Could not calculate distance.');
           setFareResult(null);
         } finally {
           setCalculating(false);
         }
       }, 700);
     } else {
-      // Hourly / Full Day — flat rate, instant
       const result = calculateFlatFare(sType, sDetail);
       setFareResult(result);
     }
@@ -197,15 +180,12 @@ export const Booking: React.FC = () => {
     recalcFare(pickup, dropoff, serviceType, d);
   };
 
-  // Recalc for Hourly/Full Day immediately on mount
   useEffect(() => {
     if (serviceType !== 'Distance') {
       recalcFare(pickup, dropoff, serviceType, serviceDetail);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  // ── Get My Location ───────────────────────────────────────────────────────
 
   const handleGetLocation = () => {
     if (!navigator.geolocation) {
@@ -250,8 +230,6 @@ export const Booking: React.FC = () => {
     );
   };
 
-  // ── Validation ────────────────────────────────────────────────────────────
-
   const validate = (): string | null => {
     if (serviceType === 'Distance' && !pickup)  return 'Please select a pickup location.';
     if (serviceType === 'Distance' && !dropoff) return 'Please select a drop-off location.';
@@ -261,8 +239,6 @@ export const Booking: React.FC = () => {
     return null;
   };
 
-  // ── Confirm booking ───────────────────────────────────────────────────────
-
   const handleBook = async () => {
     const err = validate();
     if (err) { setBookingErr(err); return; }
@@ -270,7 +246,7 @@ export const Booking: React.FC = () => {
     setIsBooking(true);
     setBookingErr(null);
 
-    const defaultCoords = { lat: 6.9271, lng: 79.8612 }; // Colombo
+    const defaultCoords = { lat: 6.9271, lng: 79.8612 };
 
     try {
       const payload: CreateBookingPayload = {
@@ -292,16 +268,17 @@ export const Booking: React.FC = () => {
       );
 
       navigate('/booking-success', { state: { booking } });
-    } catch (err: any) {
-      setBookingErr(err.message ?? 'Booking failed. Please try again.');
+    } catch (err: unknown) {
+      setBookingErr(err instanceof Error ? err.message : 'Booking failed. Please try again.');
       setIsBooking(false);
     }
   };
 
-  // ── Render ────────────────────────────────────────────────────────────────
-
   const canBook = fareResult && scheduledDate && scheduledTime &&
     (serviceType !== 'Distance' || (pickup && dropoff));
+
+  // user is used for future features; suppress unused warning safely
+  void user;
 
   return (
     <div className="min-h-[calc(100vh-80px)] py-12 px-4 sm:px-6 lg:px-8 relative">
@@ -318,11 +295,9 @@ export const Booking: React.FC = () => {
 
         <div className="grid lg:grid-cols-3 gap-8">
 
-          {/* ── LEFT: Form ── */}
           <div className="lg:col-span-2 space-y-6">
             <GlassCard glowColor="red">
 
-              {/* Service type */}
               <h2 className="text-xl font-semibold text-white mb-5 flex items-center gap-2">
                 <Car className="w-5 h-5 text-brand-red" /> Service Type
               </h2>
@@ -344,7 +319,6 @@ export const Booking: React.FC = () => {
 
               <div className="space-y-4">
 
-                {/* ── Pickup with "Use My Location" button ── */}
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
                     <label className="text-xs text-text-sub uppercase tracking-wide">Pickup Location</label>
@@ -379,7 +353,6 @@ export const Booking: React.FC = () => {
                   )}
                 </div>
 
-                {/* Drop-off */}
                 <div className="space-y-1">
                   <label className="text-xs text-text-sub uppercase tracking-wide">Drop-off Location</label>
                   <LocationInput
@@ -390,7 +363,6 @@ export const Booking: React.FC = () => {
                   />
                 </div>
 
-                {/* Service detail (Hourly / Full Day) */}
                 <AnimatePresence mode="wait">
                   {serviceType !== 'Distance' && (
                     <motion.div
@@ -422,11 +394,10 @@ export const Booking: React.FC = () => {
                   )}
                 </AnimatePresence>
 
-                {/* Date & Time */}
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1">
                     <label className="text-xs text-text-sub uppercase tracking-wide">Date</label>
-                    <CustomDatePicker 
+                    <CustomDatePicker
                       value={scheduledDate}
                       onChange={setScheduledDate}
                       minDate={new Date().toISOString().split('T')[0]}
@@ -444,10 +415,8 @@ export const Booking: React.FC = () => {
             </GlassCard>
           </div>
 
-          {/* ── RIGHT: Fare + CTA ── */}
           <div className="space-y-5">
 
-            {/* Fare card */}
             <AnimatePresence mode="wait">
               {calculating ? (
                 <motion.div key="calculating" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
@@ -493,7 +462,6 @@ export const Booking: React.FC = () => {
               )}
             </AnimatePresence>
 
-            {/* Booking error */}
             {bookingErr && (
               <div className="flex items-center gap-2 text-sm text-red-400 bg-red-400/10 border border-red-400/20 rounded-xl px-4 py-3">
                 <AlertCircle className="w-4 h-4 flex-shrink-0" />
@@ -501,7 +469,6 @@ export const Booking: React.FC = () => {
               </div>
             )}
 
-            {/* Confirm button */}
             <NeonButton
               fullWidth
               onClick={handleBook}

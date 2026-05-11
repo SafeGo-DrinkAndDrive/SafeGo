@@ -1,13 +1,9 @@
 // ─── src/pages/AdminDashboard.tsx ─────────────────────────────────────────────
-// Fully functional admin dashboard.
-// Reads all bookings and users from the backend API.
-// Admin can filter by status and update booking status in real time.
-// ─────────────────────────────────────────────────────────────────────────────
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
 import {
   Activity, Users, Clock, CheckCircle2,
-  XCircle, RefreshCw, ChevronDown,
+  RefreshCw, ChevronDown,
 } from 'lucide-react';
 import { GlassCard }  from '../components/GlassCard';
 import { useAdmin }   from '../hooks/useAdmin';
@@ -23,7 +19,6 @@ const STATUS_STYLE: Record<BookingStatus, string> = {
   cancelled: 'text-red-400     bg-red-400/10     border-red-400/30',
 };
 
-// Which statuses an admin can transition to from a given status
 const NEXT_STATUSES: Record<BookingStatus, BookingStatus[]> = {
   pending:   ['confirmed', 'cancelled'],
   confirmed: ['ongoing',   'cancelled'],
@@ -31,8 +26,6 @@ const NEXT_STATUSES: Record<BookingStatus, BookingStatus[]> = {
   completed: [],
   cancelled: [],
 };
-
-// ── Stat card ─────────────────────────────────────────────────────────────────
 
 const StatCard: React.FC<{
   label: string; value: number; icon: React.ReactNode; color: string;
@@ -48,19 +41,15 @@ const StatCard: React.FC<{
   </GlassCard>
 );
 
-// ── Status badge ──────────────────────────────────────────────────────────────
-
 const StatusBadge: React.FC<{ status: BookingStatus }> = ({ status }) => (
   <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium border capitalize ${STATUS_STYLE[status]}`}>
     {status}
   </span>
 );
 
-// ── Status updater ────────────────────────────────────────────────────────────
-
 const StatusUpdater: React.FC<{
-  booking:      Booking;
-  onUpdate:     (id: string, status: BookingStatus) => Promise<void>;
+  booking:  Booking;
+  onUpdate: (id: string, status: BookingStatus) => Promise<void>;
 }> = ({ booking, onUpdate }) => {
   const [loading, setLoading] = useState(false);
   const nexts = NEXT_STATUSES[booking.status];
@@ -96,8 +85,6 @@ const StatusUpdater: React.FC<{
   );
 };
 
-// ── Main component ────────────────────────────────────────────────────────────
-
 export const AdminDashboard: React.FC = () => {
   const { bookings, users, isLoading, error, updateStatus, refresh } = useAdmin();
   const [activeTab,    setActiveTab]    = useState<'bookings' | 'users'>('bookings');
@@ -119,7 +106,6 @@ export const AdminDashboard: React.FC = () => {
     <div className="min-h-[calc(100vh-80px)] py-8 px-4 sm:px-6 lg:px-8">
       <div className="max-w-7xl mx-auto">
 
-        {/* Header */}
         <div className="mb-8 flex items-end justify-between">
           <div>
             <h1 className="text-3xl font-bold text-white mb-1">Admin Dashboard</h1>
@@ -138,7 +124,6 @@ export const AdminDashboard: React.FC = () => {
           </div>
         )}
 
-        {/* Stats */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
           <StatCard label="Total Bookings" value={stats.total}     icon={<Activity className="w-5 h-5 text-brand-red" />}     color="bg-brand-red/20" />
           <StatCard label="Pending"        value={stats.pending}   icon={<Clock className="w-5 h-5 text-yellow-400" />}      color="bg-yellow-400/20" />
@@ -146,7 +131,6 @@ export const AdminDashboard: React.FC = () => {
           <StatCard label="Completed"      value={stats.completed} icon={<CheckCircle2 className="w-5 h-5 text-green-400" />} color="bg-green-400/20" />
         </div>
 
-        {/* Revenue */}
         <GlassCard className="mb-8 p-5">
           <p className="text-sm text-text-sub mb-1">Total Revenue (Completed)</p>
           <p className="text-3xl font-bold text-white">
@@ -154,7 +138,6 @@ export const AdminDashboard: React.FC = () => {
           </p>
         </GlassCard>
 
-        {/* Tabs */}
         <div className="flex gap-1 mb-6 bg-white/5 rounded-xl p-1 w-fit">
           {(['bookings', 'users'] as const).map((tab) => (
             <button key={tab} onClick={() => setActiveTab(tab)}
@@ -166,10 +149,8 @@ export const AdminDashboard: React.FC = () => {
           ))}
         </div>
 
-        {/* Bookings tab */}
         {activeTab === 'bookings' && (
           <div>
-            {/* Status filter */}
             <div className="flex gap-2 flex-wrap mb-5">
               {(['all', ...ALL_STATUSES] as const).map((s) => (
                 <button key={s} onClick={() => setStatusFilter(s)}
@@ -240,7 +221,6 @@ export const AdminDashboard: React.FC = () => {
           </div>
         )}
 
-        {/* Users tab */}
         {activeTab === 'users' && (
           <div className="space-y-3">
             {isLoading ? (

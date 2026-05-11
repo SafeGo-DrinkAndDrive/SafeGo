@@ -19,21 +19,17 @@ const GoogleIcon = () => (
 export const Login: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const { user, isAuthenticated, vehicleRegistered, login, loginWithGoogle, authError, clearError } = useAuth();
+  const { isAuthenticated, vehicleRegistered, login, loginWithGoogle, authError, clearError } = useAuth();
 
   const [email,     setEmail]     = useState('');
   const [password,  setPassword]  = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isGoogle,  setIsGoogle]  = useState(false);
   const [localErr,  setLocalErr]  = useState<string | null>(null);
-  // Flag: set true once login action completes so the effect knows to redirect
   const [shouldRedirect, setShouldRedirect] = useState(false);
 
   const intendedFrom = (location.state as { from?: { pathname: string } })?.from?.pathname;
 
-  // ── Redirect AFTER user state has settled in context ─────────────────────
-  // This avoids the race condition of reading vehicleRegistered before
-  // AuthContext has finished setting the user from Firestore.
   useEffect(() => {
     if (!shouldRedirect || !isAuthenticated) return;
 
@@ -53,9 +49,9 @@ export const Login: React.FC = () => {
     clearError();
     try {
       await login(email, password);
-      setShouldRedirect(true); // trigger useEffect above
-    } catch (err: any) {
-      setLocalErr(err.message);
+      setShouldRedirect(true);
+    } catch (err: unknown) {
+      setLocalErr(err instanceof Error ? err.message : 'Login failed.');
     } finally {
       setIsLoading(false);
     }
@@ -68,8 +64,8 @@ export const Login: React.FC = () => {
     try {
       await loginWithGoogle();
       setShouldRedirect(true);
-    } catch (err: any) {
-      setLocalErr(err.message);
+    } catch (err: unknown) {
+      setLocalErr(err instanceof Error ? err.message : 'Google sign-in failed.');
     } finally {
       setIsGoogle(false);
     }
@@ -100,7 +96,6 @@ export const Login: React.FC = () => {
             </div>
           )}
 
-          {/* Google */}
           <button
             type="button"
             onClick={handleGoogle}

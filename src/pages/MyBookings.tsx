@@ -1,10 +1,6 @@
 // ─── src/pages/MyBookings.tsx ─────────────────────────────────────────────────
-// Shows all bookings for the logged-in user.
-// Fetches from the backend API (GET /api/bookings → only user's own bookings).
-// Tabs for: All | Pending | Confirmed | Ongoing | Completed | Cancelled
-// ─────────────────────────────────────────────────────────────────────────────
 import React, { useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   ClipboardList, MapPin, Navigation, Calendar, Clock,
@@ -15,8 +11,6 @@ import { GlassCard }   from '../components/GlassCard';
 import { NeonButton }  from '../components/NeonButton';
 import { useBookings } from '../hooks/useBookings';
 import type { Booking, BookingStatus } from '../types';
-
-// ── Status config ─────────────────────────────────────────────────────────────
 
 type TabFilter = BookingStatus | 'all';
 
@@ -45,8 +39,6 @@ const STATUS_ICON: Record<BookingStatus, React.ReactNode> = {
   cancelled: <XCircle className="w-3.5 h-3.5" />,
 };
 
-// ── Booking card ──────────────────────────────────────────────────────────────
-
 const BookingCard: React.FC<{ booking: Booking }> = ({ booking }) => (
   <motion.div
     initial={{ opacity: 0, y: 8 }}
@@ -54,7 +46,6 @@ const BookingCard: React.FC<{ booking: Booking }> = ({ booking }) => (
     layout
   >
     <GlassCard className="p-5 hover:border-white/20 transition-all">
-      {/* Header row */}
       <div className="flex items-start justify-between gap-3 mb-4">
         <div className="min-w-0">
           <p className="text-xs font-mono text-text-sub mb-1">
@@ -70,14 +61,12 @@ const BookingCard: React.FC<{ booking: Booking }> = ({ booking }) => (
           </div>
         </div>
 
-        {/* Status badge */}
         <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border capitalize flex-shrink-0 ${STATUS_STYLE[booking.status]}`}>
           {STATUS_ICON[booking.status]}
           {booking.status}
         </span>
       </div>
 
-      {/* Route */}
       <div className="space-y-2 mb-4">
         <div className="flex items-start gap-2">
           <MapPin className="w-3.5 h-3.5 text-brand-red mt-0.5 flex-shrink-0" />
@@ -89,7 +78,6 @@ const BookingCard: React.FC<{ booking: Booking }> = ({ booking }) => (
         </div>
       </div>
 
-      {/* Meta row */}
       <div className="flex items-center justify-between pt-3 border-t border-white/8">
         <div className="flex items-center gap-4 text-xs text-text-sub">
           <span className="flex items-center gap-1">
@@ -117,8 +105,6 @@ const BookingCard: React.FC<{ booking: Booking }> = ({ booking }) => (
   </motion.div>
 );
 
-// ── Empty state ────────────────────────────────────────────────────────────────
-
 const EmptyState: React.FC<{ tab: TabFilter; onBook: () => void }> = ({ tab, onBook }) => (
   <motion.div
     initial={{ opacity: 0 }}
@@ -144,8 +130,6 @@ const EmptyState: React.FC<{ tab: TabFilter; onBook: () => void }> = ({ tab, onB
   </motion.div>
 );
 
-// ── Summary stats ─────────────────────────────────────────────────────────────
-
 const SummaryStats: React.FC<{ bookings: Booking[] }> = ({ bookings }) => {
   const completed  = bookings.filter((b) => b.status === 'completed');
   const totalSpent = completed.reduce((s, b) => s + b.fare, 0);
@@ -155,7 +139,7 @@ const SummaryStats: React.FC<{ bookings: Booking[] }> = ({ bookings }) => {
       {[
         { label: 'Total Rides',  value: bookings.length,    color: 'text-white' },
         { label: 'Completed',    value: completed.length,   color: 'text-green-400' },
-        { label: 'Pending',      value: bookings.filter((b) => b.status === 'pending').length,   color: 'text-yellow-400' },
+        { label: 'Pending',      value: bookings.filter((b) => b.status === 'pending').length, color: 'text-yellow-400' },
         { label: 'Total Spent',  value: `LKR ${totalSpent.toLocaleString()}`, color: 'text-brand-red' },
       ].map(({ label, value, color }) => (
         <GlassCard key={label} className="p-4 text-center">
@@ -166,8 +150,6 @@ const SummaryStats: React.FC<{ bookings: Booking[] }> = ({ bookings }) => {
     </div>
   );
 };
-
-// ── Main component ────────────────────────────────────────────────────────────
 
 export const MyBookings: React.FC = () => {
   const navigate = useNavigate();
@@ -185,7 +167,6 @@ export const MyBookings: React.FC = () => {
     <div className="min-h-[calc(100vh-80px)] py-10 px-4 sm:px-6 lg:px-8">
       <div className="max-w-3xl mx-auto">
 
-        {/* Header */}
         <div className="flex items-end justify-between mb-8">
           <div>
             <h1 className="text-3xl font-bold text-white mb-1">My Bookings</h1>
@@ -206,7 +187,6 @@ export const MyBookings: React.FC = () => {
           </div>
         </div>
 
-        {/* Error */}
         {error && (
           <div className="flex items-center gap-2 text-sm text-red-400 bg-red-400/10 border border-red-400/20 rounded-xl px-4 py-3 mb-6">
             <AlertCircle className="w-4 h-4 flex-shrink-0" />
@@ -214,12 +194,10 @@ export const MyBookings: React.FC = () => {
           </div>
         )}
 
-        {/* Stats */}
         {!isLoading && bookings.length > 0 && (
           <SummaryStats bookings={bookings} />
         )}
 
-        {/* Status tabs */}
         <div className="flex gap-1 overflow-x-auto pb-1 mb-6 scrollbar-none">
           {TABS.map(({ key, label }) => {
             const count = countFor(key);
@@ -246,7 +224,6 @@ export const MyBookings: React.FC = () => {
           })}
         </div>
 
-        {/* Content */}
         {isLoading ? (
           <div className="flex flex-col items-center justify-center py-20 gap-3">
             <Loader2 className="w-8 h-8 text-brand-red animate-spin" />
