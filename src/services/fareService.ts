@@ -59,10 +59,7 @@ async function getRealDistance(
         travelMode:   google.maps.TravelMode.DRIVING,
         unitSystem:   google.maps.UnitSystem.METRIC,
       },
-      (
-        result: google.maps.DistanceMatrixResponse | null,
-        status: google.maps.DistanceMatrixStatus,
-      ) => {
+      (result, status) => {
         if (status !== 'OK' || !result) {
           reject(new Error(`Distance Matrix error: ${status}`));
           return;
@@ -135,10 +132,7 @@ export async function reverseGeocode(lat: number, lng: number): Promise<string> 
     const geocoder = new google.maps.Geocoder();
     geocoder.geocode(
       { location: { lat, lng } },
-      (
-        results: google.maps.GeocoderResult[] | null,
-        status:  google.maps.GeocoderStatus,
-      ) => {
+      (results, status) => {
         if (status === 'OK' && results && results[0]) {
           resolve(results[0].formatted_address);
         } else {
