@@ -1,19 +1,29 @@
 // ─── src/components/admin/AdminFareManager.tsx ───────────────────────────────
-// Phase 3: Admin Fare Management Panel
-//
-// Features:
-//   • List all fare rules with status indicators
-//   • Create new distance-tiered or flat-rate rules
-//   • Edit existing rules
-//   • Activate / deactivate rules (one active per service type)
-//   • Live preview of how a fare will be calculated at any distance
+// Fixes in this version:
+//   1. Firestore undefined error: tiers/flatRates now omitted via spread instead
+//      of being set to undefined (Firestore rejects undefined field values).
+//   2. Double-zero keyboard bug: all numeric inputs are controlled as strings
+//      internally, only converted to numbers when saving. This lets the user
+//      clear the field and type freely without the input fighting them.
+//   3. Live preview slider removed — replaced with a plain number text input.
 // ─────────────────────────────────────────────────────────────────────────────
-import React, { useEffect, useState, useCallback } from 'react';
-import { motion, AnimatePresence }  from 'framer-motion';
+import React, { useEffect, useState, useCallback } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import {
-  Plus, Edit2, Power, PowerOff, Trash2, ChevronDown, ChevronUp,
-  Receipt, Zap, AlertCircle, CheckCircle, Loader2, Info,
-} from 'lucide-react';
+  Plus,
+  Edit2,
+  Power,
+  PowerOff,
+  Trash2,
+  ChevronDown,
+  ChevronUp,
+  Receipt,
+  Zap,
+  AlertCircle,
+  CheckCircle,
+  Loader2,
+  Info,
+} from "lucide-react";
 import {
   getAllFareRules,
   createFareRule,
@@ -21,70 +31,133 @@ import {
   setActiveRule,
   disableFareRule,
   type CreateFareRulePayload,
-} from '../../services/fareRulesService';
-import { useAuth }    from '../../contexts/AuthContext';
-import { GlassCard }  from '../GlassCard';
-import { NeonButton } from '../NeonButton';
-import type { FareRule, FareRuleTier, ServiceType } from '../../types';
+} from "../../services/fareRulesService";
+import { useAuth } from "../../contexts/AuthContext";
+import { GlassCard } from "../GlassCard";
+import { NeonButton } from "../NeonButton";
+import type { FareRule, FareRuleTier, ServiceType } from "../../types";
 
-// ── Helper: apply tiers to preview km ────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function parseNum(s: string): number {
+  const n = parseFloat(s);
+  return isNaN(n) || n < 0 ? 0 : n;
+}
 
 function previewTieredFare(km: number, tiers: FareRuleTier[]): number {
   if (!tiers.length) return 0;
   const sorted = [...tiers].sort((a, b) => a.minKm - b.minKm);
-  const tier   = sorted.findLast((t) => km >= t.minKm) ?? sorted[0];
+  let tier = sorted[0];
+  for (const t of sorted) {
+    if (km >= t.minKm) tier = t;
+  }
   return tier.baseCharge + Math.round(km * tier.ratePerKm);
 }
+
+// ── String-based tier state ───────────────────────────────────────────────────
+
+interface TierStr {
+  minKm: string;
+  maxKm: string;
+  baseCharge: string;
+  ratePerKm: string;
+}
+
+function tierToStr(t: FareRuleTier): TierStr {
+  return {
+    minKm: String(t.minKm),
+    maxKm: String(t.maxKm),
+    baseCharge: String(t.baseCharge),
+    ratePerKm: String(t.ratePerKm),
+  };
+}
+
+function strToTier(s: TierStr): FareRuleTier {
+  return {
+    minKm: parseNum(s.minKm),
+    maxKm: parseNum(s.maxKm),
+    baseCharge: parseNum(s.baseCharge),
+    ratePerKm: parseNum(s.ratePerKm),
+  };
+}
+
+const DEFAULT_TIERS_STR: TierStr[] = [
+  { minKm: "0", maxKm: "10", baseCharge: "500", ratePerKm: "150" },
+  { minKm: "10", maxKm: "20", baseCharge: "0", ratePerKm: "130" },
+  { minKm: "20", maxKm: "30", baseCharge: "0", ratePerKm: "110" },
+  { minKm: "30", maxKm: "9999", baseCharge: "0", ratePerKm: "100" },
+];
+
+// ── Shared input class ────────────────────────────────────────────────────────
+
+const inputCls =
+  "w-full bg-background-darker/60 border border-white/10 rounded-lg px-3 py-2 " +
+  "text-white text-sm outline-none focus:border-brand-red transition-all";
 
 // ── Tier editor row ────────────────────────────────────────────────────────────
 
 const TierRow: React.FC<{
-  tier:     FareRuleTier;
-  index:    number;
-  isLast:   boolean;
-  onChange: (index: number, field: keyof FareRuleTier, value: number) => void;
+  tier: TierStr;
+  index: number;
+  isLast: boolean;
+  onChange: (index: number, field: keyof TierStr, value: string) => void;
   onRemove: (index: number) => void;
 }> = ({ tier, index, isLast, onChange, onRemove }) => (
   <div className="grid grid-cols-[1fr_1fr_1fr_1fr_auto] gap-2 items-end mb-2">
     <div>
       <label className="block text-xs text-text-sub mb-1">Min km</label>
       <input
-        type="number" min={0} value={tier.minKm}
-        onChange={(e) => onChange(index, 'minKm', Number(e.target.value))}
-        className="w-full bg-background-darker/60 border border-white/10 rounded-lg px-3 py-2 text-white text-sm outline-none focus:border-brand-red"
+        type="number"
+        inputMode="numeric"
+        min={0}
+        value={tier.minKm}
+        onChange={(e) => onChange(index, "minKm", e.target.value)}
+        className={inputCls}
       />
     </div>
     <div>
       <label className="block text-xs text-text-sub mb-1">
-        Max km {isLast && <span className="text-text-sub/50">(∞ = 9999)</span>}
+        Max km {isLast && <span className="text-text-sub/50">(∞)</span>}
       </label>
       <input
-        type="number" min={0} value={isLast ? 9999 : tier.maxKm}
+        type="number"
+        inputMode="numeric"
+        min={0}
+        value={isLast ? "9999" : tier.maxKm}
         disabled={isLast}
-        onChange={(e) => onChange(index, 'maxKm', Number(e.target.value))}
-        className="w-full bg-background-darker/60 border border-white/10 rounded-lg px-3 py-2 text-white text-sm outline-none focus:border-brand-red disabled:opacity-40"
+        onChange={(e) => onChange(index, "maxKm", e.target.value)}
+        className={`${inputCls} ${isLast ? "opacity-40 cursor-not-allowed" : ""}`}
       />
     </div>
     <div>
-      <label className="block text-xs text-text-sub mb-1">Base charge (LKR)</label>
+      <label className="block text-xs text-text-sub mb-1">Base (LKR)</label>
       <input
-        type="number" min={0} value={tier.baseCharge}
-        onChange={(e) => onChange(index, 'baseCharge', Number(e.target.value))}
-        className="w-full bg-background-darker/60 border border-white/10 rounded-lg px-3 py-2 text-white text-sm outline-none focus:border-brand-red"
+        type="number"
+        inputMode="numeric"
+        min={0}
+        value={tier.baseCharge}
+        onChange={(e) => onChange(index, "baseCharge", e.target.value)}
+        className={inputCls}
+        placeholder="0"
       />
     </div>
     <div>
-      <label className="block text-xs text-text-sub mb-1">Rate / km (LKR)</label>
+      <label className="block text-xs text-text-sub mb-1">LKR / km</label>
       <input
-        type="number" min={0} value={tier.ratePerKm}
-        onChange={(e) => onChange(index, 'ratePerKm', Number(e.target.value))}
-        className="w-full bg-background-darker/60 border border-white/10 rounded-lg px-3 py-2 text-white text-sm outline-none focus:border-brand-red"
+        type="number"
+        inputMode="numeric"
+        min={0}
+        value={tier.ratePerKm}
+        onChange={(e) => onChange(index, "ratePerKm", e.target.value)}
+        className={inputCls}
+        placeholder="0"
       />
     </div>
     <button
       type="button"
       onClick={() => onRemove(index)}
       className="mb-0.5 p-2 rounded-lg text-red-400 hover:bg-red-400/10 transition-colors"
+      title="Remove tier"
     >
       <Trash2 className="w-4 h-4" />
     </button>
@@ -93,28 +166,34 @@ const TierRow: React.FC<{
 
 // ── Flat rates editor ─────────────────────────────────────────────────────────
 
-const HOURLY_SLOTS   = ['1h', '2h', '3h', '4h', '6h', '12h'];
-const FULLDAY_SLOTS  = ['4h', '6h', '8h', '10h', '12h'];
+const HOURLY_SLOTS = ["1h", "2h", "3h", "4h", "6h", "12h"];
+const FULLDAY_SLOTS = ["4h", "6h", "8h", "10h", "12h"];
+
+type FlatRatesStr = Record<string, string>;
 
 const FlatRatesEditor: React.FC<{
-  serviceType: 'Hourly' | 'Full Day';
-  rates:       Record<string, number>;
-  onChange:    (rates: Record<string, number>) => void;
+  serviceType: "Hourly" | "Full Day";
+  rates: FlatRatesStr;
+  onChange: (rates: FlatRatesStr) => void;
 }> = ({ serviceType, rates, onChange }) => {
-  const slots = serviceType === 'Hourly' ? HOURLY_SLOTS : FULLDAY_SLOTS;
+  const slots = serviceType === "Hourly" ? HOURLY_SLOTS : FULLDAY_SLOTS;
   return (
     <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
       {slots.map((slot) => (
         <div key={slot}>
           <label className="block text-xs text-text-sub mb-1">{slot}</label>
           <div className="relative">
-            <span className="absolute left-3 top-2 text-xs text-text-sub">LKR</span>
+            <span className="absolute left-3 top-2.5 text-xs text-text-sub pointer-events-none">
+              LKR
+            </span>
             <input
-              type="number" min={0}
-              value={rates[slot] ?? ''}
+              type="number"
+              inputMode="numeric"
+              min={0}
+              value={rates[slot] ?? ""}
               placeholder="0"
-              onChange={(e) => onChange({ ...rates, [slot]: Number(e.target.value) })}
-              className="w-full bg-background-darker/60 border border-white/10 rounded-lg py-2 pl-10 pr-3 text-white text-sm outline-none focus:border-brand-red"
+              onChange={(e) => onChange({ ...rates, [slot]: e.target.value })}
+              className={`${inputCls} pl-10`}
             />
           </div>
         </div>
@@ -123,65 +202,95 @@ const FlatRatesEditor: React.FC<{
   );
 };
 
-// ── Fare rule form (create / edit) ────────────────────────────────────────────
-
-const DEFAULT_TIERS: FareRuleTier[] = [
-  { minKm: 0,  maxKm: 10,   baseCharge: 500, ratePerKm: 150 },
-  { minKm: 10, maxKm: 20,   baseCharge: 0,   ratePerKm: 130 },
-  { minKm: 20, maxKm: 30,   baseCharge: 0,   ratePerKm: 110 },
-  { minKm: 30, maxKm: 9999, baseCharge: 0,   ratePerKm: 100 },
-];
+// ── Rule form ─────────────────────────────────────────────────────────────────
 
 interface RuleFormProps {
-  initial?:  FareRule;
-  onSave:    (rule: FareRule) => void;
-  onCancel:  () => void;
-  adminUid:  string;
+  initial?: FareRule;
+  onSave: (rule: FareRule) => void;
+  onCancel: () => void;
+  adminUid: string;
 }
 
-const RuleForm: React.FC<RuleFormProps> = ({ initial, onSave, onCancel, adminUid }) => {
-  const [name,        setName]        = useState(initial?.name        ?? '');
-  const [serviceType, setServiceType] = useState<ServiceType>(initial?.serviceType ?? 'Distance');
-  const [description, setDescription] = useState(initial?.description ?? '');
-  const [tiers,       setTiers]       = useState<FareRuleTier[]>(initial?.tiers ?? DEFAULT_TIERS);
-  const [flatRates,   setFlatRates]   = useState<Record<string, number>>(initial?.flatRates ?? {});
-  const [previewKm,   setPreviewKm]   = useState(15);
-  const [saving,      setSaving]      = useState(false);
-  const [error,       setError]       = useState<string | null>(null);
+const RuleForm: React.FC<RuleFormProps> = ({
+  initial,
+  onSave,
+  onCancel,
+  adminUid,
+}) => {
+  const [name, setName] = useState(initial?.name ?? "");
+  const [serviceType, setServiceType] = useState<ServiceType>(
+    initial?.serviceType ?? "Distance",
+  );
+  const [description, setDescription] = useState(initial?.description ?? "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [previewKmStr, setPreviewKmStr] = useState("15");
 
-  const previewFare = serviceType === 'Distance'
-    ? previewTieredFare(previewKm, tiers)
-    : 0;
+  const [tierStrs, setTierStrs] = useState<TierStr[]>(
+    initial?.tiers ? initial.tiers.map(tierToStr) : DEFAULT_TIERS_STR,
+  );
+
+  const [flatRatesStr, setFlatRatesStr] = useState<FlatRatesStr>(() => {
+    if (!initial?.flatRates) return {};
+    return Object.fromEntries(
+      Object.entries(initial.flatRates).map(([k, v]) => [k, String(v)]),
+    );
+  });
+
+  const previewKm = parseNum(previewKmStr);
+  const previewFare =
+    serviceType === "Distance"
+      ? previewTieredFare(previewKm, tierStrs.map(strToTier))
+      : 0;
+
+  const updateTier = (i: number, field: keyof TierStr, value: string) =>
+    setTierStrs((prev) =>
+      prev.map((t, idx) => (idx === i ? { ...t, [field]: value } : t)),
+    );
+
+  const removeTier = (i: number) =>
+    setTierStrs((prev) => prev.filter((_, idx) => idx !== i));
 
   const addTier = () => {
-    const last = tiers[tiers.length - 1];
-    setTiers([...tiers.slice(0, -1), { ...last, maxKm: last.minKm + 10 }, {
-      minKm: last.minKm + 10, maxKm: 9999, baseCharge: 0, ratePerKm: last.ratePerKm - 10,
-    }]);
+    const last = tierStrs[tierStrs.length - 1];
+    const newMin = parseNum(last.minKm) + 10;
+    setTierStrs([
+      ...tierStrs.slice(0, -1),
+      { ...last, maxKm: String(newMin) },
+      {
+        minKm: String(newMin),
+        maxKm: "9999",
+        baseCharge: "0",
+        ratePerKm: last.ratePerKm,
+      },
+    ]);
   };
 
-  const removeTier = (i: number) => setTiers(tiers.filter((_, idx) => idx !== i));
-
-  const updateTier = (i: number, field: keyof FareRuleTier, val: number) =>
-    setTiers(tiers.map((t, idx) => idx === i ? { ...t, [field]: val } : t));
-
   const handleSave = async () => {
-    if (!name.trim()) { setError('Rule name is required.'); return; }
-    if (serviceType === 'Distance' && !tiers.length) {
-      setError('At least one distance tier is required.');
+    if (!name.trim()) {
+      setError("Rule name is required.");
+      return;
+    }
+    if (serviceType === "Distance" && tierStrs.length === 0) {
+      setError("At least one distance tier is required.");
       return;
     }
     setSaving(true);
     setError(null);
     try {
+      const tiers = tierStrs.map(strToTier);
+      const flatRates = Object.fromEntries(
+        Object.entries(flatRatesStr).map(([k, v]) => [k, parseNum(v)]),
+      );
+
+      // FIX: spread to omit the unused field entirely — Firestore rejects undefined
       const payload: CreateFareRulePayload = {
-        name:        name.trim(),
+        name: name.trim(),
         serviceType,
         description: description.trim(),
-        isActive:    initial?.isActive ?? false,
-        tiers:       serviceType === 'Distance' ? tiers : undefined,
-        flatRates:   serviceType !== 'Distance' ? flatRates : undefined,
-        createdBy:   adminUid,
+        isActive: initial?.isActive ?? false,
+        createdBy: adminUid,
+        ...(serviceType === "Distance" ? { tiers } : { flatRates }),
       };
 
       let saved: FareRule;
@@ -189,12 +298,11 @@ const RuleForm: React.FC<RuleFormProps> = ({ initial, onSave, onCancel, adminUid
         await updateFareRule(initial.id, payload);
         saved = { ...initial, ...payload, updatedAt: new Date().toISOString() };
       } else {
-        const created = await createFareRule(payload, adminUid);
-        saved = created;
+        saved = await createFareRule(payload, adminUid);
       }
       onSave(saved);
-    } catch (err: any) {
-      setError(err.message ?? 'Failed to save rule.');
+    } catch (err: unknown) {
+      setError((err as Error).message ?? "Failed to save rule.");
     } finally {
       setSaving(false);
     }
@@ -203,7 +311,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ initial, onSave, onCancel, adminUid
   return (
     <GlassCard glowColor="red">
       <h3 className="text-lg font-semibold text-white mb-5">
-        {initial ? 'Edit Fare Rule' : 'Create Fare Rule'}
+        {initial ? "Edit Fare Rule" : "Create Fare Rule"}
       </h3>
 
       {error && (
@@ -223,7 +331,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ initial, onSave, onCancel, adminUid
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="e.g. Standard Distance Rate"
-              className="w-full bg-background-darker/50 border border-white/10 rounded-xl py-2.5 px-4 text-white text-sm focus:border-brand-red outline-none transition-all"
+              className={inputCls}
             />
           </div>
           <div>
@@ -233,7 +341,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ initial, onSave, onCancel, adminUid
             <select
               value={serviceType}
               onChange={(e) => setServiceType(e.target.value as ServiceType)}
-              className="w-full bg-background-darker/50 border border-white/10 rounded-xl py-2.5 px-4 text-white text-sm focus:border-brand-red outline-none transition-all"
+              className={inputCls}
             >
               <option value="Distance">Distance</option>
               <option value="Hourly">Hourly</option>
@@ -250,13 +358,13 @@ const RuleForm: React.FC<RuleFormProps> = ({ initial, onSave, onCancel, adminUid
           <input
             value={description}
             onChange={(e) => setDescription(e.target.value)}
-            placeholder="e.g. Standard weekend rate for all zones"
-            className="w-full bg-background-darker/50 border border-white/10 rounded-xl py-2.5 px-4 text-white text-sm focus:border-brand-red outline-none transition-all"
+            placeholder="e.g. Standard weekend rate"
+            className={inputCls}
           />
         </div>
 
-        {/* Pricing structure */}
-        {serviceType === 'Distance' ? (
+        {/* Distance tiers */}
+        {serviceType === "Distance" && (
           <div>
             <div className="flex items-center justify-between mb-3">
               <label className="text-xs text-text-sub uppercase tracking-wide">
@@ -274,46 +382,58 @@ const RuleForm: React.FC<RuleFormProps> = ({ initial, onSave, onCancel, adminUid
             <div className="bg-black/20 rounded-xl p-4 mb-4">
               <div className="flex items-start gap-2 text-xs text-blue-300 mb-3">
                 <Info className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
-                The rate of the tier the total distance falls into is applied to the whole journey.
+                The rate of the tier the total distance falls into is applied to
+                the whole journey.
               </div>
-              {tiers.map((tier, i) => (
+              {tierStrs.map((tier, i) => (
                 <TierRow
-                  key={i} tier={tier} index={i}
-                  isLast={i === tiers.length - 1}
+                  key={i}
+                  tier={tier}
+                  index={i}
+                  isLast={i === tierStrs.length - 1}
                   onChange={updateTier}
                   onRemove={removeTier}
                 />
               ))}
             </div>
 
-            {/* Live preview */}
+            {/* Fare preview — text input, no slider */}
             <div className="bg-brand-red/5 border border-brand-red/20 rounded-xl p-4">
               <div className="flex items-center justify-between mb-3">
-                <p className="text-sm font-medium text-white">Live preview</p>
+                <p className="text-sm font-medium text-white">Fare preview</p>
                 <div className="flex items-center gap-2">
-                  <span className="text-xs text-text-sub">{previewKm} km</span>
+                  <label className="text-xs text-text-sub">km</label>
                   <input
-                    type="range" min={1} max={100} value={previewKm}
-                    onChange={(e) => setPreviewKm(Number(e.target.value))}
-                    className="w-28 accent-brand-red"
+                    type="number"
+                    inputMode="numeric"
+                    min={0}
+                    value={previewKmStr}
+                    onChange={(e) => setPreviewKmStr(e.target.value)}
+                    className="w-20 bg-background-darker/60 border border-white/15 rounded-lg px-3 py-1.5 text-white text-sm outline-none focus:border-brand-red text-right"
+                    placeholder="15"
                   />
                 </div>
               </div>
               <p className="text-2xl font-bold text-brand-red">
                 LKR {previewFare.toLocaleString()}
               </p>
-              <p className="text-xs text-text-sub mt-0.5">Estimated fare for {previewKm} km</p>
+              <p className="text-xs text-text-sub mt-0.5">
+                Estimated fare for {previewKm} km
+              </p>
             </div>
           </div>
-        ) : (
+        )}
+
+        {/* Flat rates */}
+        {serviceType !== "Distance" && (
           <div>
             <label className="block text-xs text-text-sub uppercase tracking-wide mb-3">
               Flat rates by duration
             </label>
             <FlatRatesEditor
-              serviceType={serviceType as 'Hourly' | 'Full Day'}
-              rates={flatRates}
-              onChange={setFlatRates}
+              serviceType={serviceType as "Hourly" | "Full Day"}
+              rates={flatRatesStr}
+              onChange={setFlatRatesStr}
             />
           </div>
         )}
@@ -321,7 +441,13 @@ const RuleForm: React.FC<RuleFormProps> = ({ initial, onSave, onCancel, adminUid
         {/* Actions */}
         <div className="flex gap-3 pt-2">
           <NeonButton variant="primary" onClick={handleSave} disabled={saving}>
-            {saving ? <><Loader2 className="w-4 h-4 animate-spin mr-1" /> Saving…</> : 'Save Rule'}
+            {saving ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin mr-1" /> Saving…
+              </>
+            ) : (
+              "Save Rule"
+            )}
           </NeonButton>
           <button
             type="button"
@@ -339,32 +465,37 @@ const RuleForm: React.FC<RuleFormProps> = ({ initial, onSave, onCancel, adminUid
 // ── Rule card ─────────────────────────────────────────────────────────────────
 
 const RuleCard: React.FC<{
-  rule:       FareRule;
-  onEdit:     (rule: FareRule) => void;
+  rule: FareRule;
+  onEdit: (rule: FareRule) => void;
   onActivate: (rule: FareRule) => void;
-  onDisable:  (rule: FareRule) => void;
-  loading:    boolean;
+  onDisable: (rule: FareRule) => void;
+  loading: boolean;
 }> = ({ rule, onEdit, onActivate, onDisable, loading }) => {
   const [expanded, setExpanded] = useState(false);
 
   return (
-    <div className={`rounded-xl border transition-all ${
-      rule.isActive
-        ? 'border-brand-red/40 bg-brand-red/5'
-        : 'border-white/10 bg-white/3'
-    }`}>
+    <div
+      className={`rounded-xl border transition-all ${
+        rule.isActive
+          ? "border-brand-red/40 bg-brand-red/5"
+          : "border-white/10 bg-white/3"
+      }`}
+    >
       <div className="flex items-center justify-between p-4">
         <div className="flex items-center gap-3 min-w-0">
-          <div className={`w-2 h-2 rounded-full flex-shrink-0 ${rule.isActive ? 'bg-green-400' : 'bg-white/20'}`} />
+          <div
+            className={`w-2 h-2 rounded-full flex-shrink-0 ${rule.isActive ? "bg-green-400" : "bg-white/20"}`}
+          />
           <div className="min-w-0">
-            <p className="text-sm font-semibold text-white truncate">{rule.name}</p>
+            <p className="text-sm font-semibold text-white truncate">
+              {rule.name}
+            </p>
             <p className="text-xs text-text-sub">
               {rule.serviceType}
-              {rule.description && ` · ${rule.description}`}
+              {rule.description ? ` · ${rule.description}` : ""}
             </p>
           </div>
         </div>
-
         <div className="flex items-center gap-2 flex-shrink-0 ml-3">
           {rule.isActive && (
             <span className="px-2 py-0.5 rounded-full text-xs bg-green-400/10 text-green-400 border border-green-400/20">
@@ -375,7 +506,11 @@ const RuleCard: React.FC<{
             onClick={() => setExpanded((v) => !v)}
             className="p-1.5 text-text-sub hover:text-white transition-colors"
           >
-            {expanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+            {expanded ? (
+              <ChevronUp className="w-4 h-4" />
+            ) : (
+              <ChevronDown className="w-4 h-4" />
+            )}
           </button>
           <button
             onClick={() => onEdit(rule)}
@@ -388,7 +523,6 @@ const RuleCard: React.FC<{
               onClick={() => onDisable(rule)}
               disabled={loading}
               className="p-1.5 text-yellow-400 hover:text-yellow-300 transition-colors disabled:opacity-50"
-              title="Disable this rule"
             >
               <PowerOff className="w-4 h-4" />
             </button>
@@ -397,7 +531,6 @@ const RuleCard: React.FC<{
               onClick={() => onActivate(rule)}
               disabled={loading}
               className="p-1.5 text-green-400 hover:text-green-300 transition-colors disabled:opacity-50"
-              title="Activate this rule"
             >
               <Power className="w-4 h-4" />
             </button>
@@ -405,30 +538,36 @@ const RuleCard: React.FC<{
         </div>
       </div>
 
-      {/* Expanded detail */}
       <AnimatePresence>
         {expanded && (
           <motion.div
             initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
+            animate={{ height: "auto", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
             className="overflow-hidden"
           >
             <div className="px-4 pb-4 border-t border-white/5 pt-3">
-              {rule.serviceType === 'Distance' && rule.tiers?.length ? (
+              {rule.serviceType === "Distance" && rule.tiers?.length ? (
                 <table className="w-full text-xs">
                   <thead>
                     <tr className="text-text-sub">
-                      <th className="text-left pb-1.5 font-medium">Distance band</th>
-                      <th className="text-right pb-1.5 font-medium">Base charge</th>
-                      <th className="text-right pb-1.5 font-medium">Rate / km</th>
+                      <th className="text-left pb-1.5 font-medium">
+                        Distance band
+                      </th>
+                      <th className="text-right pb-1.5 font-medium">
+                        Base charge
+                      </th>
+                      <th className="text-right pb-1.5 font-medium">
+                        Rate / km
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
                     {rule.tiers.map((tier, i) => (
                       <tr key={i} className="border-t border-white/5">
                         <td className="py-1.5 text-white">
-                          {tier.minKm}–{tier.maxKm >= 9999 ? '∞' : tier.maxKm} km
+                          {tier.minKm}–{tier.maxKm >= 9999 ? "∞" : tier.maxKm}{" "}
+                          km
                         </td>
                         <td className="py-1.5 text-right text-text-sub">
                           LKR {tier.baseCharge.toLocaleString()}
@@ -443,7 +582,10 @@ const RuleCard: React.FC<{
               ) : rule.flatRates ? (
                 <div className="grid grid-cols-3 gap-2">
                   {Object.entries(rule.flatRates).map(([slot, price]) => (
-                    <div key={slot} className="bg-white/5 rounded-lg p-2 text-center">
+                    <div
+                      key={slot}
+                      className="bg-white/5 rounded-lg p-2 text-center"
+                    >
                       <p className="text-xs text-text-sub">{slot}</p>
                       <p className="text-sm font-semibold text-white">
                         LKR {price.toLocaleString()}
@@ -456,7 +598,8 @@ const RuleCard: React.FC<{
               )}
               <p className="text-xs text-text-sub mt-2">
                 Created {new Date(rule.createdAt).toLocaleDateString()}
-                {rule.updatedAt !== rule.createdAt && ` · Updated ${new Date(rule.updatedAt).toLocaleDateString()}`}
+                {rule.updatedAt !== rule.createdAt &&
+                  ` · Updated ${new Date(rule.updatedAt).toLocaleDateString()}`}
               </p>
             </div>
           </motion.div>
@@ -470,27 +613,28 @@ const RuleCard: React.FC<{
 
 export const AdminFareManager: React.FC = () => {
   const { user } = useAuth();
-  const [rules,    setRules]    = useState<FareRule[]>([]);
-  const [loading,  setLoading]  = useState(true);
+  const [rules, setRules] = useState<FareRule[]>([]);
+  const [loading, setLoading] = useState(true);
   const [actioning, setActioning] = useState(false);
-  const [error,    setError]    = useState<string | null>(null);
-  const [success,  setSuccess]  = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
-  const [editing,  setEditing]  = useState<FareRule | undefined>(undefined);
+  const [editing, setEditing] = useState<FareRule | undefined>(undefined);
 
   const loadRules = useCallback(async () => {
     setLoading(true);
     try {
-      const list = await getAllFareRules();
-      setRules(list);
-    } catch (err: any) {
-      setError(err.message);
+      setRules(await getAllFareRules());
+    } catch (err: unknown) {
+      setError((err as Error).message);
     } finally {
       setLoading(false);
     }
   }, []);
 
-  useEffect(() => { loadRules(); }, [loadRules]);
+  useEffect(() => {
+    loadRules();
+  }, [loadRules]);
 
   const flash = (msg: string) => {
     setSuccess(msg);
@@ -503,8 +647,8 @@ export const AdminFareManager: React.FC = () => {
       await setActiveRule(rule.id, rule.serviceType);
       await loadRules();
       flash(`"${rule.name}" is now the active ${rule.serviceType} rule.`);
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      setError((err as Error).message);
     } finally {
       setActioning(false);
     }
@@ -516,8 +660,8 @@ export const AdminFareManager: React.FC = () => {
       await disableFareRule(rule.id);
       await loadRules();
       flash(`"${rule.name}" has been disabled.`);
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      setError((err as Error).message);
     } finally {
       setActioning(false);
     }
@@ -527,22 +671,24 @@ export const AdminFareManager: React.FC = () => {
     setShowForm(false);
     setEditing(undefined);
     setRules((prev) => {
-      const existing = prev.findIndex((r) => r.id === saved.id);
-      if (existing >= 0) {
+      const idx = prev.findIndex((r) => r.id === saved.id);
+      if (idx >= 0) {
         const next = [...prev];
-        next[existing] = saved;
+        next[idx] = saved;
         return next;
       }
       return [saved, ...prev];
     });
-    flash(editing ? 'Rule updated.' : 'New rule created.');
+    flash(editing ? "Rule updated." : "New rule created.");
   };
 
-  const grouped = (['Distance', 'Hourly', 'Full Day'] as ServiceType[]).map((st) => ({
-    serviceType: st,
-    rules: rules.filter((r) => r.serviceType === st),
-    activeRule: rules.find((r) => r.serviceType === st && r.isActive),
-  }));
+  const grouped = (["Distance", "Hourly", "Full Day"] as ServiceType[]).map(
+    (st) => ({
+      serviceType: st,
+      rules: rules.filter((r) => r.serviceType === st),
+      activeRule: rules.find((r) => r.serviceType === st && r.isActive),
+    }),
+  );
 
   return (
     <div className="space-y-6">
@@ -554,12 +700,16 @@ export const AdminFareManager: React.FC = () => {
             Fare Management
           </h2>
           <p className="text-sm text-text-sub mt-0.5">
-            Create and manage dynamic pricing rules. Only one rule can be active per service type.
+            Create and manage dynamic pricing rules. Only one rule can be active
+            per service type.
           </p>
         </div>
         <NeonButton
           variant="primary"
-          onClick={() => { setEditing(undefined); setShowForm(true); }}
+          onClick={() => {
+            setEditing(undefined);
+            setShowForm(true);
+          }}
         >
           <Plus className="w-4 h-4 mr-1" /> New Rule
         </NeonButton>
@@ -569,7 +719,9 @@ export const AdminFareManager: React.FC = () => {
       <AnimatePresence>
         {success && (
           <motion.div
-            initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0 }}
             className="flex items-center gap-2 text-sm text-green-400 bg-green-400/10 border border-green-400/20 rounded-xl px-4 py-3"
           >
             <CheckCircle className="w-4 h-4" /> {success}
@@ -577,32 +729,44 @@ export const AdminFareManager: React.FC = () => {
         )}
         {error && (
           <motion.div
-            initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0 }}
             className="flex items-center gap-2 text-sm text-red-400 bg-red-400/10 border border-red-400/20 rounded-xl px-4 py-3"
           >
             <AlertCircle className="w-4 h-4" /> {error}
-            <button onClick={() => setError(null)} className="ml-auto text-xs hover:underline">dismiss</button>
+            <button
+              onClick={() => setError(null)}
+              className="ml-auto text-xs hover:underline"
+            >
+              dismiss
+            </button>
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* Create / edit form */}
+      {/* Form */}
       <AnimatePresence>
-        {(showForm || editing) && (
+        {(showForm || editing !== undefined) && (
           <motion.div
-            initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
           >
             <RuleForm
               initial={editing}
-              adminUid={user?.uid ?? ''}
+              adminUid={user?.uid ?? ""}
               onSave={handleSaved}
-              onCancel={() => { setShowForm(false); setEditing(undefined); }}
+              onCancel={() => {
+                setShowForm(false);
+                setEditing(undefined);
+              }}
             />
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* Rules grouped by service type */}
+      {/* Rules list */}
       {loading ? (
         <div className="flex items-center justify-center py-16">
           <Loader2 className="w-6 h-6 animate-spin text-brand-red" />
@@ -617,8 +781,7 @@ export const AdminFareManager: React.FC = () => {
                 </h3>
                 {activeRule ? (
                   <span className="flex items-center gap-1 text-xs text-green-400 bg-green-400/10 px-2 py-0.5 rounded-full border border-green-400/20">
-                    <Zap className="w-3 h-3" />
-                    {activeRule.name}
+                    <Zap className="w-3 h-3" /> {activeRule.name}
                   </span>
                 ) : (
                   <span className="text-xs text-yellow-400 bg-yellow-400/10 px-2 py-0.5 rounded-full border border-yellow-400/20">
@@ -626,7 +789,6 @@ export const AdminFareManager: React.FC = () => {
                   </span>
                 )}
               </div>
-
               {group.length === 0 ? (
                 <div className="text-sm text-text-sub border border-white/5 rounded-xl px-4 py-6 text-center">
                   No rules yet for {serviceType}. Create one above.
@@ -638,7 +800,10 @@ export const AdminFareManager: React.FC = () => {
                       key={rule.id}
                       rule={rule}
                       loading={actioning}
-                      onEdit={(r) => { setEditing(r); setShowForm(false); }}
+                      onEdit={(r) => {
+                        setEditing(r);
+                        setShowForm(false);
+                      }}
                       onActivate={handleActivate}
                       onDisable={handleDisable}
                     />
