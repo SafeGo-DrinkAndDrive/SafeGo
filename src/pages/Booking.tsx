@@ -1,40 +1,37 @@
 // ─── src/pages/Booking.tsx ────────────────────────────────────────────────────
-import React, { useState, useCallback, useRef, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
-import { motion, AnimatePresence } from "framer-motion";
+// Phase 3 changes:
+//   • Replaced calculateFareForDistance / calculateFlatFare (hardcoded) with
+//     calculateDynamicFare / calculateFlatFareDynamic (Firestore-powered).
+//   • Fare breakdown now shows which rule/tier was applied.
+//   • fareRuleId is stored with the Firestore booking document.
+//   • No hardcoded rates anywhere in this file.
+// ─────────────────────────────────────────────────────────────────────────────
+import React, { useState, useCallback, useRef, useEffect } from 'react';
+import { useNavigate }      from 'react-router-dom';
+import { motion, AnimatePresence } from 'framer-motion';
 import {
-  MapPin,
-  Navigation,
-  Clock,
-  Car,
-  AlertCircle,
-  Loader2,
-  Locate,
-  LocateFixed,
-  Route,
-  Receipt,
-  TrendingUp,
-} from "lucide-react";
-import { GlassCard } from "../components/GlassCard";
-import { NeonButton } from "../components/NeonButton";
-import { LocationInput } from "../components/LocationInput";
-import { CustomDatePicker } from "../components/CustomDatePicker";
-import { CustomTimePicker } from "../components/CustomTimePicker";
-import { useAuth } from "../contexts/AuthContext";
-import { useBookings } from "../hooks/useBookings";
+  MapPin, Navigation, Calendar, Clock, Car,
+  AlertCircle, Loader2, Locate, LocateFixed,
+  Route, Receipt, TrendingUp, Info,
+} from 'lucide-react';
+import { GlassCard }           from '../components/GlassCard';
+import { NeonButton }          from '../components/NeonButton';
+import { LocationInput }       from '../components/LocationInput';
+import { CustomDatePicker }    from '../components/CustomDatePicker';
+import { CustomTimePicker }    from '../components/CustomTimePicker';
+import { useAuth }             from '../contexts/AuthContext';
+import { useBookings }         from '../hooks/useBookings';
 import {
-  calculateFareForDistance,
-  calculateFlatFare,
+  calculateDynamicFare,
+  calculateFlatFareDynamic,
   reverseGeocode,
-  type FareResult,
-} from "../services/fareService";
-import type { ServiceType, PlaceResult, CreateBookingPayload } from "../types";
+} from '../services/fareRulesService';
+import type { ServiceType, PlaceResult, CreateBookingPayload, FarePricingResult } from '../types';
 
 // ── Fare breakdown card ───────────────────────────────────────────────────────
 
-const FareCard: React.FC<{ fare: FareResult; serviceType: ServiceType }> = ({
-  fare,
-  serviceType,
+const FareCard: React.FC<{ fare: FarePricingResult; serviceType: ServiceType }> = ({
+  fare, serviceType,
 }) => (
   <motion.div
     initial={{ opacity: 0, y: 8 }}
@@ -42,30 +39,32 @@ const FareCard: React.FC<{ fare: FareResult; serviceType: ServiceType }> = ({
     exit={{ opacity: 0, y: -8 }}
   >
     <GlassCard glowColor="red" className="overflow-hidden">
+      {/* Header */}
       <div className="flex items-center gap-2 mb-5 pb-4 border-b border-white/8">
         <div className="p-2 bg-brand-red/15 rounded-lg">
           <Receipt className="w-4 h-4 text-brand-red" />
         </div>
         <div>
           <p className="text-sm font-semibold text-white">Fare Estimate</p>
-          <p className="text-xs text-text-sub">Based on shortest route</p>
+          <p className="text-xs text-text-sub">
+            {fare.fareRuleName} · Based on shortest route
+          </p>
         </div>
       </div>
 
+      {/* Distance / Duration stats */}
       <div className="space-y-3 mb-5">
-        {serviceType === "Distance" && (
+        {serviceType === 'Distance' && (
           <>
             <div className="flex justify-between items-center">
               <div className="flex items-center gap-2 text-text-sub text-sm">
                 <Route className="w-3.5 h-3.5" /> Distance
               </div>
-              <span className="text-white font-medium">
-                {fare.distanceKm} km
-              </span>
+              <span className="text-white font-medium">{fare.distanceKm} km</span>
             </div>
             <div className="flex justify-between items-center">
               <div className="flex items-center gap-2 text-text-sub text-sm">
-                <Clock className="w-3.5 h-3.5" /> Est. Travel Time
+                <Clock className="w-3.5 h-3.5" /> Est. time
               </div>
               <span className="text-white font-medium">
                 {fare.durationMins >= 60
@@ -73,52 +72,78 @@ const FareCard: React.FC<{ fare: FareResult; serviceType: ServiceType }> = ({
                   : `${fare.durationMins} min`}
               </span>
             </div>
-            <div className="flex justify-between items-center">
-              <div className="flex items-center gap-2 text-text-sub text-sm">
-                <TrendingUp className="w-3.5 h-3.5" /> Rate
+            {fare.breakdown.tierUsed && (
+              <div className="flex justify-between items-start">
+                <div className="flex items-center gap-2 text-text-sub text-sm">
+                  <TrendingUp className="w-3.5 h-3.5" /> Rate
+                </div>
+                <span className="text-white font-medium text-right text-sm">
+                  {fare.breakdown.tierUsed}
+                </span>
               </div>
-              <span className="text-white font-medium">
-                LKR {fare.breakdown.ratePerKm.toLocaleString()}/km
-              </span>
-            </div>
-            <div className="h-px bg-white/8 my-1" />
-            <div className="flex justify-between items-center">
-              <span className="text-sm text-text-sub">Distance Charge</span>
-              <span className="text-sm text-white">
-                LKR {fare.breakdown.distanceCharge.toLocaleString()}
-              </span>
-            </div>
+            )}
+            {fare.breakdown.baseCharge > 0 && (
+              <div className="flex justify-between items-center">
+                <div className="flex items-center gap-2 text-text-sub text-sm">
+                  <Receipt className="w-3.5 h-3.5" /> Base charge
+                </div>
+                <span className="text-white font-medium">
+                  LKR {fare.breakdown.baseCharge.toLocaleString()}
+                </span>
+              </div>
+            )}
           </>
         )}
-
-        {serviceType !== "Distance" && (
+        {serviceType !== 'Distance' && (
           <div className="flex justify-between items-center">
             <div className="flex items-center gap-2 text-text-sub text-sm">
               <Clock className="w-3.5 h-3.5" /> Duration
             </div>
             <span className="text-white font-medium">
-              {fare.durationMins >= 60
-                ? `${Math.floor(fare.durationMins / 60)} hours`
-                : `${fare.durationMins} min`}
+              {Math.floor(fare.durationMins / 60)} hours
             </span>
           </div>
         )}
       </div>
 
+      {/* Total fare */}
       <div className="bg-gradient-to-r from-brand-red/15 to-brand-red/5 border border-brand-red/25 rounded-xl p-4 flex items-center justify-between">
         <div>
           <p className="text-xs text-text-sub mb-0.5">Total Fare</p>
           <p className="text-xs text-brand-red/70">*Estimate only</p>
         </div>
-        <div className="text-right">
-          <p className="text-3xl font-bold text-brand-red tracking-tight">
-            LKR {fare.fare.toLocaleString()}
-          </p>
-        </div>
+        <p className="text-3xl font-bold text-brand-red tracking-tight">
+          LKR {fare.fare.toLocaleString()}
+        </p>
       </div>
+
+      {/* Rule name badge */}
+      {fare.fareRuleId !== 'fallback' && (
+        <div className="flex items-center gap-1.5 mt-3 text-xs text-text-sub">
+          <Info className="w-3 h-3" />
+          Priced using: {fare.fareRuleName}
+        </div>
+      )}
+      {fare.fareRuleId === 'fallback' && (
+        <div className="flex items-center gap-1.5 mt-3 text-xs text-yellow-400">
+          <AlertCircle className="w-3 h-3" />
+          No pricing rule configured — using default rates
+        </div>
+      )}
     </GlassCard>
   </motion.div>
 );
+
+// ── Service type selector ─────────────────────────────────────────────────────
+
+const SERVICE_TYPES: { type: ServiceType; label: string; icon: typeof Car }[] = [
+  { type: 'Distance', label: 'By Distance',  icon: Route },
+  { type: 'Hourly',   label: 'Hourly',       icon: Clock },
+  { type: 'Full Day', label: 'Full Day',     icon: Calendar },
+];
+
+const HOURLY_OPTIONS  = ['1h', '2h', '3h', '4h', '6h', '12h'];
+const FULLDAY_OPTIONS = ['4h', '6h', '8h', '10h', '12h'];
 
 // ── Main component ────────────────────────────────────────────────────────────
 
@@ -127,410 +152,311 @@ export const Booking: React.FC = () => {
   const { user } = useAuth();
   const { createBooking } = useBookings();
 
-  const [pickup, setPickup] = useState<PlaceResult | null>(null);
+  // ── Location state ────────────────────────────────────────────────────────
+  const [pickup,  setPickup]  = useState<PlaceResult | null>(null);
   const [dropoff, setDropoff] = useState<PlaceResult | null>(null);
 
-  const [serviceType, setServiceType] = useState<ServiceType>("Distance");
-  const [serviceDetail, setServiceDetail] = useState("2h");
-  const [scheduledDate, setScheduledDate] = useState("");
-  const [scheduledTime, setScheduledTime] = useState("");
+  // ── Service options ───────────────────────────────────────────────────────
+  const [serviceType,   setServiceType]   = useState<ServiceType>('Distance');
+  const [serviceDetail, setServiceDetail] = useState('2h');
+  const [scheduledDate, setScheduledDate] = useState('');
+  const [scheduledTime, setScheduledTime] = useState('');
 
+  // ── Geolocation ───────────────────────────────────────────────────────────
   const [locating, setLocating] = useState(false);
   const [locError, setLocError] = useState<string | null>(null);
 
-  const [fareResult, setFareResult] = useState<FareResult | null>(null);
+  // ── Fare ──────────────────────────────────────────────────────────────────
+  const [fareResult,  setFareResult]  = useState<FarePricingResult | null>(null);
   const [calculating, setCalculating] = useState(false);
-  const [fareError, setFareError] = useState<string | null>(null);
+  const [fareError,   setFareError]   = useState<string | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
 
-  const [isBooking, setIsBooking] = useState(false);
+  // ── Booking ───────────────────────────────────────────────────────────────
+  const [isBooking,  setIsBooking]  = useState(false);
   const [bookingErr, setBookingErr] = useState<string | null>(null);
 
-  const recalcFare = useCallback(
-    (
-      p: PlaceResult | null,
-      d: PlaceResult | null,
-      sType: ServiceType,
-      sDetail: string,
-    ) => {
-      clearTimeout(debounceRef.current);
-      setFareError(null);
+  // ── Recalculate fare whenever inputs change ───────────────────────────────
 
-      if (sType === "Distance") {
-        if (!p || !d) {
+  const recalcFare = useCallback((
+    p:      PlaceResult | null,
+    d:      PlaceResult | null,
+    sType:  ServiceType,
+    sDetail: string,
+  ) => {
+    clearTimeout(debounceRef.current);
+    setFareError(null);
+
+    if (sType === 'Distance') {
+      if (!p || !d) { setFareResult(null); return; }
+      setCalculating(true);
+      debounceRef.current = setTimeout(async () => {
+        try {
+          const result = await calculateDynamicFare(p.coords, d.coords);
+          setFareResult(result);
+        } catch (err: any) {
+          setFareError(err.message ?? 'Could not calculate fare.');
           setFareResult(null);
-          return;
+        } finally {
+          setCalculating(false);
         }
-        setCalculating(true);
-        debounceRef.current = setTimeout(async () => {
-          try {
-            const result = await calculateFareForDistance(p.coords, d.coords);
-            setFareResult(result);
-          } catch (err: unknown) {
-            setFareError(
-              err instanceof Error
-                ? err.message
-                : "Could not calculate distance.",
-            );
-            setFareResult(null);
-          } finally {
-            setCalculating(false);
-          }
-        }, 700);
-      } else {
-        const result = calculateFlatFare(sType, sDetail);
-        setFareResult(result);
-      }
-    },
-    [],
-  );
-
-  const handlePickup = (p: PlaceResult) => {
-    setPickup(p);
-    recalcFare(p, dropoff, serviceType, serviceDetail);
-  };
-  const handleDropoff = (d: PlaceResult) => {
-    setDropoff(d);
-    recalcFare(pickup, d, serviceType, serviceDetail);
-  };
-  const handleServiceType = (t: ServiceType) => {
-    setServiceType(t);
-    setFareResult(null);
-    recalcFare(pickup, dropoff, t, serviceDetail);
-  };
-  const handleDetail = (d: string) => {
-    setServiceDetail(d);
-    recalcFare(pickup, dropoff, serviceType, d);
-  };
-
-  useEffect(() => {
-    if (serviceType !== "Distance") {
-      recalcFare(pickup, dropoff, serviceType, serviceDetail);
+      }, 600);
+    } else {
+      setCalculating(true);
+      debounceRef.current = setTimeout(async () => {
+        try {
+          const result = await calculateFlatFareDynamic(sType as 'Hourly' | 'Full Day', sDetail);
+          setFareResult(result);
+        } catch (err: any) {
+          setFareError(err.message ?? 'Could not load pricing.');
+          setFareResult(null);
+        } finally {
+          setCalculating(false);
+        }
+      }, 300);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleGetLocation = () => {
+  // Re-run on any booking input change
+  useEffect(() => {
+    recalcFare(pickup, dropoff, serviceType, serviceDetail);
+    return () => clearTimeout(debounceRef.current);
+  }, [pickup, dropoff, serviceType, serviceDetail, recalcFare]);
+
+  // ── Geolocation: use current position as pickup ───────────────────────────
+
+  const handleUseLocation = () => {
     if (!navigator.geolocation) {
-      setLocError("Geolocation is not supported by your browser.");
+      setLocError('Geolocation is not supported by your browser.');
       return;
     }
     setLocating(true);
     setLocError(null);
-
     navigator.geolocation.getCurrentPosition(
-      async (position) => {
-        const { latitude: lat, longitude: lng } = position.coords;
+      async (pos) => {
         try {
+          const { latitude: lat, longitude: lng } = pos.coords;
           const address = await reverseGeocode(lat, lng);
-          const place: PlaceResult = {
-            address,
-            placeId: `geo_${lat}_${lng}`,
-            coords: { lat, lng },
-          };
-          setPickup(place);
-          recalcFare(place, dropoff, serviceType, serviceDetail);
+          setPickup({ address, placeId: `geo_${lat}_${lng}`, coords: { lat, lng } });
         } catch {
-          setLocError("Could not get your address. Please select manually.");
+          setLocError('Could not determine your address. Please type it manually.');
         } finally {
           setLocating(false);
         }
       },
       (err) => {
         setLocating(false);
-        switch (err.code) {
-          case err.PERMISSION_DENIED:
-            setLocError(
-              "Location permission denied. Please enable it in your browser settings.",
-            );
-            break;
-          case err.POSITION_UNAVAILABLE:
-            setLocError("Location unavailable. Please select manually.");
-            break;
-          default:
-            setLocError("Could not get your location.");
-        }
+        if (err.code === 1) setLocError('Location permission denied. Please allow access or type your address.');
+        else setLocError('Could not get your location. Please try again.');
       },
-      { timeout: 10000, enableHighAccuracy: true },
+      { timeout: 10000, maximumAge: 30000 },
     );
   };
 
-  const validate = (): string | null => {
-    if (serviceType === "Distance" && !pickup)
-      return "Please select a pickup location.";
-    if (serviceType === "Distance" && !dropoff)
-      return "Please select a drop-off location.";
-    if (!scheduledDate) return "Please select a date.";
-    if (!scheduledTime) return "Please select a time.";
-    if (!fareResult) return "Please wait for fare calculation.";
-    return null;
-  };
+  // ── Submit booking ────────────────────────────────────────────────────────
 
   const handleBook = async () => {
-    const err = validate();
-    if (err) {
-      setBookingErr(err);
+    if (!user) return;
+    if (serviceType === 'Distance' && (!pickup || !dropoff)) {
+      setBookingErr('Please enter both pickup and drop-off locations.');
+      return;
+    }
+    if (!scheduledDate || !scheduledTime) {
+      setBookingErr('Please select a date and time.');
+      return;
+    }
+    if (!fareResult) {
+      setBookingErr('Fare has not been calculated yet. Please wait.');
       return;
     }
 
     setIsBooking(true);
     setBookingErr(null);
 
-    const defaultCoords = { lat: 6.9271, lng: 79.8612 };
-
     try {
       const payload: CreateBookingPayload = {
-        pickupLocation: pickup?.address ?? "N/A",
-        pickupCoords: pickup?.coords ?? defaultCoords,
-        dropLocation: dropoff?.address ?? "N/A",
-        dropCoords: dropoff?.coords ?? defaultCoords,
+        pickupLocation: pickup?.address ?? 'N/A',
+        pickupCoords:   pickup?.coords  ?? { lat: 0, lng: 0 },
+        dropLocation:   dropoff?.address ?? 'N/A',
+        dropCoords:     dropoff?.coords  ?? { lat: 0, lng: 0 },
         serviceType,
-        serviceDetail: serviceType !== "Distance" ? serviceDetail : undefined,
+        serviceDetail:  serviceType !== 'Distance' ? serviceDetail : undefined,
         scheduledDate,
         scheduledTime,
       };
 
       const booking = await createBooking(
         payload,
-        fareResult!.fare,
-        fareResult!.distanceKm,
-        fareResult!.durationMins,
+        fareResult.fare,
+        fareResult.distanceKm,
+        fareResult.durationMins,
+        fareResult.fareRuleId,   // Phase 3: stored with booking
       );
 
-      navigate("/booking-success", { state: { booking } });
-    } catch (err: unknown) {
-      setBookingErr(
-        err instanceof Error
-          ? err.message
-          : "Booking failed. Please try again.",
-      );
+      navigate('/booking-success', {
+        state: {
+          booking,
+          userPhone: user.phone,
+          fareRuleName: fareResult.fareRuleName,
+        },
+      });
+    } catch (err: any) {
+      setBookingErr(err.message ?? 'Booking failed. Please try again.');
+    } finally {
       setIsBooking(false);
     }
   };
 
-  const canBook =
-    fareResult &&
-    scheduledDate &&
-    scheduledTime &&
-    (serviceType !== "Distance" || (pickup && dropoff));
+  // ── Service options (duration selector) ──────────────────────────────────
 
-  // user is used for future features; suppress unused warning safely
-  void user;
+  const durationOptions = serviceType === 'Hourly' ? HOURLY_OPTIONS : FULLDAY_OPTIONS;
+
+  // ── Render ────────────────────────────────────────────────────────────────
 
   return (
-    <div className="min-h-[calc(100vh-80px)] py-12 px-4 sm:px-6 lg:px-8 relative">
-      <div
-        className="absolute inset-0 z-0 opacity-10 pointer-events-none bg-cover bg-center mix-blend-screen"
-        style={{ backgroundImage: "url('/bg.jpg')" }}
-      />
+    <div className="min-h-[calc(100vh-80px)] py-12 px-4">
+      <div className="max-w-2xl mx-auto space-y-6">
 
-      <div className="max-w-5xl mx-auto relative z-10">
-        <div className="mb-8">
-          <h1 className="text-3xl font-bold text-white mb-2">Book a Ride</h1>
-          <p className="text-text-sub">Your safe journey starts here</p>
+        {/* Header */}
+        <div>
+          <h1 className="text-3xl font-bold text-white mb-1">Book a Driver</h1>
+          <p className="text-text-sub">
+            Hi {user?.name.split(' ')[0]}! Fill in your booking details below.
+          </p>
         </div>
 
-        <div className="grid lg:grid-cols-3 gap-8">
-          <div className="lg:col-span-2 space-y-6">
-            <GlassCard glowColor="red">
-              <h2 className="text-xl font-semibold text-white mb-5 flex items-center gap-2">
-                <Car className="w-5 h-5 text-brand-red" /> Service Type
-              </h2>
-              <div className="grid grid-cols-3 gap-3 mb-6">
-                {(["Distance", "Hourly", "Full Day"] as ServiceType[]).map(
-                  (type) => (
-                    <button
-                      key={type}
-                      onClick={() => handleServiceType(type)}
-                      className={`py-3 px-3 rounded-xl text-sm font-medium transition-all border ${
-                        serviceType === type
-                          ? "bg-brand-red/20 border-brand-red text-brand-red shadow-brand"
-                          : "bg-background-darker/50 border-white/10 text-text-sub hover:bg-white/5"
-                      }`}
-                    >
-                      {type}
-                    </button>
-                  ),
-                )}
-              </div>
+        {/* Service type selector */}
+        <div className="grid grid-cols-3 gap-3">
+          {SERVICE_TYPES.map(({ type, label, icon: Icon }) => (
+            <button
+              key={type}
+              onClick={() => { setServiceType(type); setFareResult(null); }}
+              className={`flex flex-col items-center gap-2 py-4 px-3 rounded-xl border transition-all ${
+                serviceType === type
+                  ? 'border-brand-red bg-brand-red/10 text-white'
+                  : 'border-white/10 text-text-sub hover:border-white/20 hover:text-white'
+              }`}
+            >
+              <Icon className="w-5 h-5" />
+              <span className="text-xs font-medium">{label}</span>
+            </button>
+          ))}
+        </div>
 
-              <div className="space-y-4">
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <label className="text-xs text-text-sub uppercase tracking-wide">
-                      Pickup Location
-                    </label>
+        <GlassCard glowColor="red">
+          <div className="space-y-5">
+
+            {/* Distance: pickup + dropoff */}
+            {serviceType === 'Distance' && (
+              <>
+                {/* Pickup */}
+                <div>
+                  <label className="block text-xs text-text-sub uppercase tracking-wide mb-2">
+                    Pickup Location
+                  </label>
+                  <div className="flex gap-2">
+                    <div className="flex-1">
+                      <LocationInput
+                        value={pickup?.address ?? ''}
+                        onSelect={setPickup}
+                        placeholder="Enter pickup address"
+                        icon={<MapPin className="h-5 w-5 text-brand-red" />}
+                      />
+                    </div>
                     <button
-                      type="button"
-                      onClick={handleGetLocation}
+                      onClick={handleUseLocation}
                       disabled={locating}
-                      className="flex items-center gap-1.5 text-xs text-brand-red hover:text-white border border-brand-red/40 hover:border-white/30 bg-brand-red/8 hover:bg-white/5 px-2.5 py-1.5 rounded-lg transition-all disabled:opacity-60"
+                      className="px-3 py-3 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 text-text-sub hover:text-white transition-all disabled:opacity-50 flex-shrink-0"
+                      title="Use my current location"
                     >
-                      {locating ? (
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      ) : pickup ? (
-                        <LocateFixed className="w-3.5 h-3.5" />
-                      ) : (
-                        <Locate className="w-3.5 h-3.5" />
-                      )}
-                      {locating ? "Getting location…" : "Use My Location"}
+                      {locating
+                        ? <Loader2 className="w-5 h-5 animate-spin" />
+                        : pickup ? <LocateFixed className="w-5 h-5 text-brand-red" /> : <Locate className="w-5 h-5" />
+                      }
                     </button>
                   </div>
-
-                  <LocationInput
-                    placeholder="Search or use button above"
-                    value={pickup?.address ?? ""}
-                    onChange={handlePickup}
-                    icon={<MapPin className="text-brand-red" />}
-                  />
-
                   {locError && (
-                    <p className="text-xs text-red-400 flex items-center gap-1.5">
-                      <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
-                      {locError}
+                    <p className="text-xs text-red-400 mt-1 flex items-center gap-1">
+                      <AlertCircle className="w-3 h-3" /> {locError}
                     </p>
                   )}
                 </div>
 
-                <div className="space-y-1">
-                  <label className="text-xs text-text-sub uppercase tracking-wide">
+                {/* Drop-off */}
+                <div>
+                  <label className="block text-xs text-text-sub uppercase tracking-wide mb-2">
                     Drop-off Location
                   </label>
                   <LocationInput
-                    placeholder="Enter drop-off location"
-                    value={dropoff?.address ?? ""}
-                    onChange={handleDropoff}
-                    icon={<Navigation className="text-brand-gray" />}
+                    value={dropoff?.address ?? ''}
+                    onSelect={setDropoff}
+                    placeholder="Enter destination"
+                    icon={<Navigation className="h-5 w-5 text-text-sub" />}
                   />
                 </div>
+              </>
+            )}
 
-                <AnimatePresence mode="wait">
-                  {serviceType !== "Distance" && (
-                    <motion.div
-                      initial={{ opacity: 0, height: 0 }}
-                      animate={{ opacity: 1, height: "auto" }}
-                      exit={{ opacity: 0, height: 0 }}
-                      className="relative"
+            {/* Hourly / Full Day: duration picker */}
+            {serviceType !== 'Distance' && (
+              <div>
+                <label className="block text-xs text-text-sub uppercase tracking-wide mb-2">
+                  Duration
+                </label>
+                <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
+                  {durationOptions.map((opt) => (
+                    <button
+                      key={opt}
+                      onClick={() => setServiceDetail(opt)}
+                      className={`py-2.5 rounded-xl text-sm font-medium border transition-all ${
+                        serviceDetail === opt
+                          ? 'border-brand-red bg-brand-red/10 text-white'
+                          : 'border-white/10 text-text-sub hover:border-white/20 hover:text-white'
+                      }`}
                     >
-                      <Clock className="absolute left-4 top-3.5 h-5 w-5 text-text-sub pointer-events-none" />
-                      <select
-                        value={serviceDetail}
-                        onChange={(e) => handleDetail(e.target.value)}
-                        className="w-full bg-background-darker/50 border border-white/10 rounded-xl py-3 pl-12 pr-4 text-white focus:border-brand-red outline-none appearance-none"
-                      >
-                        {serviceType === "Hourly"
-                          ? ["1h", "2h", "3h", "4h", "6h", "12h"].map((h) => (
-                              <option key={h} value={h}>
-                                {h.replace(
-                                  "h",
-                                  ` Hour${parseInt(h) > 1 ? "s" : ""}`,
-                                )}
-                              </option>
-                            ))
-                          : ["4h", "6h", "8h", "10h", "12h"].map((h) => (
-                              <option key={h} value={h}>
-                                {h.replace("h", " Hour Package")}
-                              </option>
-                            ))}
-                      </select>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1">
-                    <label className="text-xs text-text-sub uppercase tracking-wide">
-                      Date
-                    </label>
-                    <CustomDatePicker
-                      value={scheduledDate}
-                      onChange={setScheduledDate}
-                      minDate={new Date().toISOString().split("T")[0]}
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-xs text-text-sub uppercase tracking-wide">
-                      Time
-                    </label>
-                    <CustomTimePicker
-                      value={scheduledTime}
-                      onChange={setScheduledTime}
-                    />
-                  </div>
+                      {opt}
+                    </button>
+                  ))}
                 </div>
               </div>
-            </GlassCard>
-          </div>
+            )}
 
-          <div className="space-y-5">
-            <AnimatePresence mode="wait">
-              {calculating ? (
-                <motion.div
-                  key="calculating"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                >
-                  <GlassCard>
-                    <div className="flex items-center justify-center gap-3 py-10 text-text-sub">
-                      <Loader2 className="w-5 h-5 animate-spin text-brand-red" />
-                      <div>
-                        <p className="text-sm text-white">Calculating fare…</p>
-                        <p className="text-xs text-text-sub">
-                          Getting shortest route
-                        </p>
-                      </div>
-                    </div>
-                  </GlassCard>
-                </motion.div>
-              ) : fareError ? (
-                <motion.div
-                  key="fareerror"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                >
-                  <GlassCard>
-                    <div className="flex items-start gap-2 text-sm text-red-400 py-4">
-                      <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-                      <span>{fareError}</span>
-                    </div>
-                  </GlassCard>
-                </motion.div>
-              ) : fareResult ? (
-                <FareCard
-                  key="fare"
-                  fare={fareResult}
-                  serviceType={serviceType}
+            {/* Pickup address for non-distance services */}
+            {serviceType !== 'Distance' && (
+              <div>
+                <label className="block text-xs text-text-sub uppercase tracking-wide mb-2">
+                  Starting Location
+                </label>
+                <LocationInput
+                  value={pickup?.address ?? ''}
+                  onSelect={setPickup}
+                  placeholder="Where should the driver meet you?"
+                  icon={<MapPin className="h-5 w-5 text-brand-red" />}
                 />
-              ) : (
-                <motion.div
-                  key="placeholder"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                >
-                  <GlassCard>
-                    <div className="flex flex-col items-center justify-center py-10 gap-3">
-                      <div className="w-12 h-12 rounded-full bg-brand-red/10 flex items-center justify-center">
-                        <Receipt className="w-6 h-6 text-brand-red/50" />
-                      </div>
-                      <div className="text-center">
-                        <p className="text-sm text-text-sub">
-                          {serviceType === "Distance"
-                            ? "Select pickup & drop-off to see fare"
-                            : "Select a duration to see fare"}
-                        </p>
-                        <p className="text-xs text-text-sub/60 mt-1">
-                          Rate: LKR 1,000/km
-                        </p>
-                      </div>
-                    </div>
-                  </GlassCard>
-                </motion.div>
-              )}
-            </AnimatePresence>
+              </div>
+            )}
 
+            {/* Date + time */}
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs text-text-sub uppercase tracking-wide mb-2">
+                  Date
+                </label>
+                <CustomDatePicker
+                  value={scheduledDate}
+                  onChange={setScheduledDate}
+                  min={new Date().toLocaleDateString('en-CA')}
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-text-sub uppercase tracking-wide mb-2">
+                  Time
+                </label>
+                <CustomTimePicker value={scheduledTime} onChange={setScheduledTime} />
+              </div>
+            </div>
+
+            {/* Booking error */}
             {bookingErr && (
               <div className="flex items-center gap-2 text-sm text-red-400 bg-red-400/10 border border-red-400/20 rounded-xl px-4 py-3">
                 <AlertCircle className="w-4 h-4 flex-shrink-0" />
@@ -538,37 +464,47 @@ export const Booking: React.FC = () => {
               </div>
             )}
 
+            {/* Fare card */}
+            <AnimatePresence mode="wait">
+              {calculating && (
+                <motion.div
+                  key="calculating"
+                  initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                  className="flex items-center gap-3 text-sm text-text-sub py-4"
+                >
+                  <Loader2 className="w-4 h-4 animate-spin text-brand-red" />
+                  Calculating fare…
+                </motion.div>
+              )}
+              {fareError && !calculating && (
+                <motion.div
+                  key="fareError"
+                  initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                  className="flex items-center gap-2 text-sm text-yellow-400 bg-yellow-400/10 border border-yellow-400/20 rounded-xl px-4 py-3"
+                >
+                  <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                  {fareError}
+                </motion.div>
+              )}
+              {fareResult && !calculating && (
+                <FareCard key="fare" fare={fareResult} serviceType={serviceType} />
+              )}
+            </AnimatePresence>
+
+            {/* Book button */}
             <NeonButton
+              variant="primary"
               fullWidth
               onClick={handleBook}
-              disabled={!canBook || isBooking}
-              className="py-4 text-base"
+              disabled={isBooking || calculating || !fareResult}
             >
-              {isBooking ? (
-                <span className="flex items-center gap-2">
-                  <Loader2 className="w-5 h-5 animate-spin" /> Saving Booking…
-                </span>
-              ) : fareResult ? (
-                <span className="flex flex-col items-center gap-0.5">
-                  <span>Confirm Booking</span>
-                  <span className="text-xs opacity-75 font-normal">
-                    LKR {fareResult.fare.toLocaleString()}
-                  </span>
-                </span>
-              ) : (
-                "Confirm Booking"
-              )}
+              {isBooking
+                ? <><Loader2 className="w-4 h-4 animate-spin mr-2" /> Booking…</>
+                : 'Confirm Booking'
+              }
             </NeonButton>
-
-            {!canBook && (
-              <p className="text-xs text-text-sub text-center">
-                {!fareResult
-                  ? "Set locations to calculate fare first"
-                  : "Pick a date and time to continue"}
-              </p>
-            )}
           </div>
-        </div>
+        </GlassCard>
       </div>
     </div>
   );

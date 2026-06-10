@@ -1,5 +1,5 @@
 // ─── src/hooks/useBookings.ts ─────────────────────────────────────────────────
-// Reads/writes bookings directly via Firestore (no backend required).
+// Phase 3 change: createBooking now accepts fareRuleId as an optional 5th arg.
 // ─────────────────────────────────────────────────────────────────────────────
 import { useState, useEffect, useCallback } from 'react';
 import {
@@ -8,14 +8,20 @@ import {
   firestoreUpdateStatus,
   type CreateBookingArgs,
 } from '../services/firestoreService';
-import { useAuth } from '../contexts/AuthContext';
+import { useAuth }   from '../contexts/AuthContext';
 import type { Booking, BookingStatus, CreateBookingPayload } from '../types';
 
 interface UseBookingsReturn {
   bookings:      Booking[];
   isLoading:     boolean;
   error:         string | null;
-  createBooking: (payload: CreateBookingPayload, fare: number, distanceKm: number, durationMins?: number) => Promise<Booking>;
+  createBooking: (
+    payload:      CreateBookingPayload,
+    fare:         number,
+    distanceKm:   number,
+    durationMins?: number,
+    fareRuleId?:  string,     // Phase 3
+  ) => Promise<Booking>;
   updateStatus:  (id: string, status: BookingStatus) => Promise<void>;
   refresh:       () => void;
 }
@@ -44,10 +50,11 @@ export function useBookings(): UseBookingsReturn {
   }, [isAuthenticated, user, tick]);
 
   const createBooking = async (
-    payload:     CreateBookingPayload,
-    fare:        number,
-    distanceKm:  number,
+    payload:      CreateBookingPayload,
+    fare:         number,
+    distanceKm:   number,
     durationMins?: number,
+    fareRuleId?:  string,
   ): Promise<Booking> => {
     if (!user) throw new Error('Not authenticated');
 
@@ -62,6 +69,7 @@ export function useBookings(): UseBookingsReturn {
       fare,
       distanceKm,
       durationMins,
+      fareRuleId,
     };
 
     const booking = await firestoreCreateBooking(args);

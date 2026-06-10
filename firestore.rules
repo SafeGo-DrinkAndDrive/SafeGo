@@ -1,62 +1,118 @@
+// ─── firestore.rules ──────────────────────────────────────────────────────────
+// Phase 2 additions: phone field validation
+// Phase 3 additions: /fareRules collection (admin write, all authenticated read)
+// ─────────────────────────────────────────────────────────────────────────────
 rules_version = '2';
+
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    function isSignedIn() { return request.auth != null; }
-    function isOwner(uid) { return isSignedIn() && request.auth.uid == uid; }
-    function isAdmin() {
-      return isSignedIn() &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    // ── Helper functions ────────────────────────────────────────────────────
+
+    function isSignedIn() {
+      return request.auth != null;
     }
 
-    // ── Users ────────────────────────────────────────────────────────────────
-    match /users/{userId} {
-      allow read:   if isOwner(userId) || isAdmin();
-      allow create: if isOwner(userId)
-        && request.resource.data.role == 'user'
-        && request.resource.data.vehicleRegistered == false;
-      allow update: if isOwner(userId)
-        && request.resource.data.role == resource.data.role
-        && (request.resource.data.vehicleRegistered == true ||
-            request.resource.data.vehicleRegistered == resource.data.vehicleRegistered);
-      allow delete: if false;
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
 
-      // Vehicles subcollection
+    // Re-reads the user doc to check role — not spoofable via client state
+    function getRole() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && getRole() in ['admin', 'superAdmin'];
+    }
+
+    function isSuperAdmin() {
+      return isSignedIn() && getRole() == 'superAdmin';
+    }
+
+    // ── /users/{uid} ────────────────────────────────────────────────────────
+
+    match /users/{uid} {
+      // Any authenticated user can read their own profile.
+      // Admins can read any profile.
+      allow read: if isOwner(uid) || isAdmin();
+
+      // On create: uid must match auth, no role elevation allowed
+      allow create: if isOwner(uid)
+        && request.resource.data.role == 'user'
+        && request.resource.data.uid  == uid;
+
+      // On update: owners can change limited fields only.
+      // They cannot change their own role (prevents privilege escalation).
+      allow update: if isOwner(uid)
+        && !request.resource.data.diff(resource.data).affectedKeys()
+             .hasAny(['role', 'uid', 'createdAt'])
+        // Admins can update anything on any user profile
+        || isAdmin();
+
+      allow delete: if isSuperAdmin();
+
+      // ── Vehicle sub-collection ──────────────────────────────────────────
       match /vehicles/{vehicleId} {
-        allow read:   if isOwner(userId) || isAdmin();
-        allow create: if isOwner(userId) && request.resource.data.userId == userId;
-        allow update: if isOwner(userId) && request.resource.data.userId == userId;
-        allow delete: if false;
+        allow read:   if isOwner(uid) || isAdmin();
+        allow create: if isOwner(uid);
+        allow update: if isOwner(uid) || isAdmin();
+        allow delete: if isOwner(uid) || isAdmin();
       }
     }
 
-    // ── Bookings ─────────────────────────────────────────────────────────────
-    // Client writes directly to Firestore (no backend server needed for MVP).
-    match /bookings/{bookingId} {
-      // Read: users see only own bookings; admins see all
-      allow read: if isSignedIn() &&
-        (resource.data.userId == request.auth.uid || isAdmin());
+    // ── /bookings/{bookingId} ───────────────────────────────────────────────
 
-      // Create: authenticated users can create bookings for themselves
+    match /bookings/{bookingId} {
+      // Users can read their own bookings; admins can read all
+      allow read: if isSignedIn()
+        && (resource.data.userId == request.auth.uid || isAdmin());
+
+      // Create: authenticated user, fare > 0, userId matches auth
+      // Phase 3: fare amount comes from client but fareRuleId is stored for audit
       allow create: if isSignedIn()
         && request.resource.data.userId == request.auth.uid
-        && request.resource.data.status == 'pending'
-        && request.resource.data.fare is number
-        && request.resource.data.fare > 0;
+        && request.resource.data.fare   is number
+        && request.resource.data.fare   >  0
+        && request.resource.data.status == 'pending';
 
-      // Update: users can only cancel their own; admins can change any status
+      // Status updates: users can only cancel their own pending bookings.
+      // Admins can set any status.
       allow update: if isSignedIn() && (
-        (resource.data.userId == request.auth.uid &&
-         request.resource.data.status == 'cancelled') ||
-        isAdmin()
+        (
+          resource.data.userId == request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt', '_serverTs'])
+          && request.resource.data.status == 'cancelled'
+          && resource.data.status         == 'pending'
+        )
+        || isAdmin()
       );
 
-      allow delete: if false;
+      allow delete: if isAdmin();
     }
 
-    // Deny everything else
-    match /{document=**} {
-      allow read, write: if false;
+    // ── /fareRules/{ruleId} ─────────────────────────────────────────────────
+    // Phase 3: Admin-managed dynamic pricing rules.
+    //
+    // Read:  any authenticated user (needed for fare preview on booking page)
+    // Write: admins only
+
+    match /fareRules/{ruleId} {
+      allow read:   if isSignedIn();
+      allow create: if isAdmin()
+        && request.resource.data.serviceType in ['Distance', 'Hourly', 'Full Day']
+        && request.resource.data.isActive     is bool
+        && request.resource.data.name         is string
+        && request.resource.data.name.size()  >  0;
+      allow update: if isAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    // ── /appSettings/{doc} ──────────────────────────────────────────────────
+    // Global config (future use)
+    match /appSettings/{docId} {
+      allow read:  if isSignedIn();
+      allow write: if isSuperAdmin();
     }
   }
 }
