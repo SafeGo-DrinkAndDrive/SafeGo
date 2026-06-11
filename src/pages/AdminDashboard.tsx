@@ -1,8 +1,9 @@
 // ─── src/pages/AdminDashboard.tsx ─────────────────────────────────────────────
-// New in this version:
-//   • Booking date filter: Day / Week / Month / All
-//   • User detail modal: view profile, suspend, ban, promote to admin, delete
-//   • Admin writes user changes directly to Firestore via updateDoc / deleteDoc
+// Added in this version:
+//   • "Settings" tab → AdminBookingSettings panel (booking policy config)
+//   • Date filter: Today / This Week / This Month / All Time
+//   • Booking type badge (standard / immediate) on each booking card
+//   • User detail modal with account management actions
 // ─────────────────────────────────────────────────────────────────────────────
 import React, { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -30,12 +31,15 @@ import {
   Mail,
   UserCheck,
   Ban,
+  Zap,
+  Settings,
 } from "lucide-react";
 import { doc, updateDoc, deleteDoc } from "firebase/firestore";
 import { db } from "../firebase";
 import { GlassCard } from "../components/GlassCard";
 import { useAdmin } from "../hooks/useAdmin";
 import { AdminFareManager } from "../components/admin/AdminFareManager";
+import { AdminBookingSettings } from "../components/admin/AdminBookingSettings";
 import type { Booking, BookingStatus, AppUser, UserRole } from "../types";
 
 // ── Date filter ───────────────────────────────────────────────────────────────
@@ -53,22 +57,19 @@ function applyDateFilter(bookings: Booking[], filter: DateFilter): Booking[] {
   if (filter === "all") return bookings;
   const now = new Date();
   const start = new Date();
-
   if (filter === "day") {
     start.setHours(0, 0, 0, 0);
   } else if (filter === "week") {
-    const day = now.getDay(); // 0=Sun
-    start.setDate(now.getDate() - day);
+    start.setDate(now.getDate() - now.getDay());
     start.setHours(0, 0, 0, 0);
-  } else if (filter === "month") {
+  } else {
     start.setDate(1);
     start.setHours(0, 0, 0, 0);
   }
-
   return bookings.filter((b) => new Date(b.createdAt) >= start);
 }
 
-// ── Booking status config ─────────────────────────────────────────────────────
+// ── Status ────────────────────────────────────────────────────────────────────
 
 const ALL_STATUSES: BookingStatus[] = [
   "pending",
@@ -79,11 +80,11 @@ const ALL_STATUSES: BookingStatus[] = [
 ];
 
 const STATUS_STYLE: Record<BookingStatus, string> = {
-  pending: "text-yellow-400  bg-yellow-400/10  border-yellow-400/30",
-  confirmed: "text-blue-400    bg-blue-400/10    border-blue-400/30",
-  ongoing: "text-brand-red   bg-brand-red/10   border-brand-red/30",
-  completed: "text-green-400   bg-green-400/10   border-green-400/30",
-  cancelled: "text-red-400     bg-red-400/10     border-red-400/30",
+  pending: "text-yellow-400 bg-yellow-400/10 border-yellow-400/30",
+  confirmed: "text-blue-400   bg-blue-400/10   border-blue-400/30",
+  ongoing: "text-brand-red  bg-brand-red/10  border-brand-red/30",
+  completed: "text-green-400  bg-green-400/10  border-green-400/30",
+  cancelled: "text-red-400    bg-red-400/10    border-red-400/30",
 };
 
 const NEXT_STATUSES: Record<BookingStatus, BookingStatus[]> = {
@@ -121,6 +122,7 @@ const StatusUpdater: React.FC<{
 }> = ({ booking, onUpdate }) => {
   const [loading, setLoading] = useState(false);
   const nexts = NEXT_STATUSES[booking.status];
+
   if (nexts.length === 0) {
     return (
       <span
@@ -143,7 +145,7 @@ const StatusUpdater: React.FC<{
   };
 
   return (
-    <div className="relative flex items-center gap-2">
+    <div className="flex items-center gap-2">
       <span
         className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium border capitalize ${STATUS_STYLE[booking.status]}`}
       >
@@ -154,10 +156,10 @@ const StatusUpdater: React.FC<{
           onChange={handleChange}
           disabled={loading}
           defaultValue=""
-          className="appearance-none text-xs bg-white/5 border border-white/15 rounded-lg pl-2 pr-6 py-1 text-text-sub hover:bg-white/10 transition-all cursor-pointer disabled:opacity-50 outline-none"
+          className="appearance-none text-xs bg-white/5 border border-white/15 rounded-lg pl-2 pr-6 py-1 text-text-sub hover:bg-white/10 cursor-pointer disabled:opacity-50 outline-none"
         >
           <option value="" disabled>
-            Change
+            Move to
           </option>
           {nexts.map((s) => (
             <option key={s} value={s} className="bg-background capitalize">
@@ -193,13 +195,12 @@ const UserModal: React.FC<{
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
-  // Close on Escape
   React.useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
+    const h = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
-    document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
+    document.addEventListener("keydown", h);
+    return () => document.removeEventListener("keydown", h);
   }, [onClose]);
 
   const flash = (msg: string) => {
@@ -213,9 +214,9 @@ const UserModal: React.FC<{
     try {
       await updateDoc(doc(db, "users", user.uid), changes);
       onUpdated(user.uid, changes);
-      flash("User updated successfully.");
-    } catch (err: unknown) {
-      setError((err as Error).message ?? "Update failed.");
+      flash("User updated.");
+    } catch (e: unknown) {
+      setError((e as Error).message ?? "Update failed.");
     } finally {
       setSaving(false);
     }
@@ -223,19 +224,17 @@ const UserModal: React.FC<{
 
   const handleDelete = async () => {
     setDeleting(true);
-    setError(null);
     try {
       await deleteDoc(doc(db, "users", user.uid));
       onDeleted(user.uid);
       onClose();
-    } catch (err: unknown) {
-      setError((err as Error).message ?? "Deletion failed.");
+    } catch (e: unknown) {
+      setError((e as Error).message ?? "Deletion failed.");
       setDeleting(false);
       setConfirmDelete(false);
     }
   };
 
-  const currentRole = user.role ?? "user";
   const isSuspended = (user as AppUser & { suspended?: boolean }).suspended;
 
   return (
@@ -247,7 +246,6 @@ const UserModal: React.FC<{
       onClick={onClose}
     >
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
-
       <motion.div
         initial={{ opacity: 0, y: 40, scale: 0.97 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -256,7 +254,6 @@ const UserModal: React.FC<{
         onClick={(e) => e.stopPropagation()}
         className="relative w-full max-w-lg bg-background-card border border-white/10 rounded-2xl shadow-2xl overflow-hidden z-10"
       >
-        {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-white/8">
           <h2 className="text-lg font-bold text-white">User Details</h2>
           <button
@@ -267,11 +264,10 @@ const UserModal: React.FC<{
           </button>
         </div>
 
-        {/* Body */}
         <div className="px-6 py-5 space-y-5 max-h-[70vh] overflow-y-auto">
           {/* Profile */}
           <div className="flex items-center gap-4">
-            <div className="w-16 h-16 rounded-full bg-brand-red/20 border border-brand-red/30 flex items-center justify-center flex-shrink-0 overflow-hidden">
+            <div className="w-16 h-16 rounded-full bg-brand-red/20 border border-brand-red/30 flex items-center justify-center overflow-hidden flex-shrink-0">
               {user.photoURL ? (
                 <img
                   src={user.photoURL}
@@ -290,23 +286,23 @@ const UserModal: React.FC<{
               </p>
               <div className="flex items-center gap-2 flex-wrap mt-0.5">
                 <span className="text-xs px-2 py-0.5 bg-white/10 text-text-sub rounded-full">
-                  {ROLE_LABELS[currentRole]}
+                  {ROLE_LABELS[user.role ?? "user"]}
                 </span>
                 {user.vehicleRegistered && (
                   <span className="text-xs px-2 py-0.5 bg-green-400/10 text-green-400 rounded-full border border-green-400/20">
-                    Vehicle registered
+                    verified
                   </span>
                 )}
                 {isSuspended && (
                   <span className="text-xs px-2 py-0.5 bg-red-400/10 text-red-400 rounded-full border border-red-400/20">
-                    Suspended
+                    suspended
                   </span>
                 )}
               </div>
             </div>
           </div>
 
-          {/* Contact info */}
+          {/* Contact */}
           <div className="space-y-2">
             <div className="flex items-center gap-3 text-sm">
               <Mail className="w-4 h-4 text-text-sub flex-shrink-0" />
@@ -315,7 +311,7 @@ const UserModal: React.FC<{
             <div className="flex items-center gap-3 text-sm">
               <Phone className="w-4 h-4 text-text-sub flex-shrink-0" />
               <span className={user.phone ? "text-white" : "text-yellow-400"}>
-                {user.phone || "No phone number"}
+                {user.phone || "No phone on file"}
               </span>
             </div>
             <div className="flex items-center gap-3 text-sm">
@@ -331,7 +327,7 @@ const UserModal: React.FC<{
             </div>
           </div>
 
-          {/* Feedback messages */}
+          {/* Feedback */}
           {success && (
             <div className="flex items-center gap-2 text-sm text-green-400 bg-green-400/10 border border-green-400/20 rounded-xl px-4 py-3">
               <CheckCircle2 className="w-4 h-4 flex-shrink-0" /> {success}
@@ -343,13 +339,12 @@ const UserModal: React.FC<{
             </div>
           )}
 
-          {/* Management actions */}
+          {/* Actions */}
           <div>
             <p className="text-xs text-text-sub uppercase tracking-wide mb-3">
               Account Actions
             </p>
             <div className="grid grid-cols-2 gap-2">
-              {/* Verify / Unverify */}
               <button
                 onClick={() =>
                   applyChange({ vehicleRegistered: !user.vehicleRegistered })
@@ -360,8 +355,6 @@ const UserModal: React.FC<{
                 <UserCheck className="w-4 h-4 text-blue-400" />
                 {user.vehicleRegistered ? "Unverify" : "Verify"} User
               </button>
-
-              {/* Suspend / Unsuspend */}
               <button
                 onClick={() =>
                   applyChange({ suspended: !isSuspended } as Partial<AppUser>)
@@ -370,21 +363,19 @@ const UserModal: React.FC<{
                 className="flex items-center gap-2 py-2.5 px-3 rounded-xl border border-white/10 text-sm text-text-sub hover:bg-white/5 hover:text-white transition-all disabled:opacity-50"
               >
                 <ShieldAlert className="w-4 h-4 text-yellow-400" />
-                {isSuspended ? "Unsuspend" : "Suspend"} User
+                {isSuspended ? "Unsuspend" : "Suspend"}
               </button>
-
-              {/* Promote / Demote admin */}
-              {currentRole !== "superAdmin" && (
+              {user.role !== "superAdmin" && (
                 <button
                   onClick={() =>
                     applyChange({
-                      role: currentRole === "admin" ? "user" : "admin",
+                      role: user.role === "admin" ? "user" : "admin",
                     })
                   }
                   disabled={saving}
                   className="flex items-center gap-2 py-2.5 px-3 rounded-xl border border-white/10 text-sm text-text-sub hover:bg-white/5 hover:text-white transition-all disabled:opacity-50"
                 >
-                  {currentRole === "admin" ? (
+                  {user.role === "admin" ? (
                     <>
                       <ShieldOff className="w-4 h-4 text-orange-400" /> Remove
                       Admin
@@ -396,8 +387,6 @@ const UserModal: React.FC<{
                   )}
                 </button>
               )}
-
-              {/* Ban user (set role to 'user' and suspended) */}
               <button
                 onClick={() =>
                   applyChange({
@@ -405,7 +394,7 @@ const UserModal: React.FC<{
                     role: "user",
                   } as Partial<AppUser>)
                 }
-                disabled={saving || currentRole === "superAdmin"}
+                disabled={saving || user.role === "superAdmin"}
                 className="flex items-center gap-2 py-2.5 px-3 rounded-xl border border-red-500/20 text-sm text-red-400 hover:bg-red-500/10 transition-all disabled:opacity-50"
               >
                 <Ban className="w-4 h-4" /> Ban User
@@ -413,7 +402,7 @@ const UserModal: React.FC<{
             </div>
           </div>
 
-          {/* Delete account (danger zone) */}
+          {/* Danger zone */}
           <div className="border border-red-500/20 rounded-xl p-4">
             <p className="text-xs text-red-400 font-semibold uppercase tracking-wide mb-2">
               Danger Zone
@@ -428,8 +417,8 @@ const UserModal: React.FC<{
             ) : (
               <div className="space-y-2">
                 <p className="text-xs text-red-300">
-                  This will permanently delete the user's Firestore profile.
-                  This cannot be undone.
+                  This permanently deletes the Firestore profile. Cannot be
+                  undone.
                 </p>
                 <div className="flex gap-2">
                   <button
@@ -463,7 +452,7 @@ const UserModal: React.FC<{
 
 // ── Tab definition ────────────────────────────────────────────────────────────
 
-type ActiveTab = "bookings" | "users" | "fares";
+type ActiveTab = "bookings" | "users" | "fares" | "settings";
 
 const TABS: { key: ActiveTab; label: string; icon: React.ReactNode }[] = [
   {
@@ -477,9 +466,14 @@ const TABS: { key: ActiveTab; label: string; icon: React.ReactNode }[] = [
     label: "Fare Management",
     icon: <Receipt className="w-4 h-4" />,
   },
+  {
+    key: "settings",
+    label: "Settings",
+    icon: <Settings className="w-4 h-4" />,
+  },
 ];
 
-// ── Main component ────────────────────────────────────────────────────────────
+// ── Main ──────────────────────────────────────────────────────────────────────
 
 export const AdminDashboard: React.FC = () => {
   const { bookings, users, isLoading, error, updateStatus, refresh } =
@@ -493,12 +487,10 @@ export const AdminDashboard: React.FC = () => {
   const [selectedUser, setSelectedUser] = useState<AppUser | null>(null);
   const [localUsers, setLocalUsers] = useState<AppUser[]>([]);
 
-  // Sync localUsers when admin hook loads
   React.useEffect(() => {
     setLocalUsers(users);
   }, [users]);
 
-  // Apply both filters
   const dateFiltered = applyDateFilter(bookings, dateFilter);
   const finalFiltered =
     statusFilter === "all"
@@ -537,9 +529,11 @@ export const AdminDashboard: React.FC = () => {
             <h1 className="text-3xl font-bold text-white mb-1">
               Admin Dashboard
             </h1>
-            <p className="text-text-sub">Manage bookings, users and pricing</p>
+            <p className="text-text-sub">
+              Manage bookings, users, pricing and settings
+            </p>
           </div>
-          {activeTab !== "fares" && (
+          {activeTab !== "fares" && activeTab !== "settings" && (
             <button
               onClick={refresh}
               disabled={isLoading}
@@ -563,7 +557,7 @@ export const AdminDashboard: React.FC = () => {
         {activeTab === "bookings" && (
           <>
             {/* Date filter */}
-            <div className="flex gap-2 mb-6 flex-wrap">
+            <div className="flex gap-2 mb-5 flex-wrap">
               {DATE_FILTERS.map(({ key, label }) => (
                 <button
                   key={key}
@@ -581,7 +575,7 @@ export const AdminDashboard: React.FC = () => {
 
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
               <StatCard
-                label="Total Bookings"
+                label="Total"
                 value={stats.total}
                 icon={<Activity className="w-5 h-5 text-brand-red" />}
                 color="bg-brand-red/20"
@@ -608,8 +602,8 @@ export const AdminDashboard: React.FC = () => {
 
             <GlassCard className="mb-6 p-5">
               <p className="text-sm text-text-sub mb-1">
-                Revenue (Completed ·{" "}
-                {DATE_FILTERS.find((f) => f.key === dateFilter)?.label})
+                Revenue ·{" "}
+                {DATE_FILTERS.find((f) => f.key === dateFilter)?.label}
               </p>
               <p className="text-3xl font-bold text-white">
                 LKR {stats.revenue.toLocaleString()}
@@ -619,12 +613,12 @@ export const AdminDashboard: React.FC = () => {
         )}
 
         {/* Tab bar */}
-        <div className="flex gap-1 mb-6 bg-white/5 rounded-xl p-1 w-fit">
+        <div className="flex gap-1 mb-6 bg-white/5 rounded-xl p-1 w-fit flex-wrap">
           {TABS.map(({ key, label, icon }) => (
             <button
               key={key}
               onClick={() => setActiveTab(key)}
-              className={`flex items-center gap-2 px-5 py-2 rounded-lg text-sm font-medium transition-all ${
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
                 activeTab === key
                   ? "bg-brand-red/20 text-brand-red"
                   : "text-text-sub hover:text-white"
@@ -635,10 +629,9 @@ export const AdminDashboard: React.FC = () => {
           ))}
         </div>
 
-        {/* ── Bookings tab ──────────────────────────────────────────────── */}
+        {/* ── Bookings ── */}
         {activeTab === "bookings" && (
           <div>
-            {/* Status filter chips */}
             <div className="flex gap-2 flex-wrap mb-5">
               {(["all", ...ALL_STATUSES] as const).map((s) => (
                 <button
@@ -669,7 +662,7 @@ export const AdminDashboard: React.FC = () => {
             ) : finalFiltered.length === 0 ? (
               <GlassCard>
                 <p className="text-center text-text-sub py-12">
-                  No bookings found for this filter.
+                  No bookings match this filter.
                 </p>
               </GlassCard>
             ) : (
@@ -684,7 +677,7 @@ export const AdminDashboard: React.FC = () => {
                     <GlassCard className="p-5">
                       <div className="flex flex-col sm:flex-row sm:items-start gap-4 justify-between">
                         <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-3 mb-2 flex-wrap">
+                          <div className="flex items-center gap-2 mb-2 flex-wrap">
                             <span className="text-xs font-mono text-text-sub">
                               {b.id.slice(0, 12)}…
                             </span>
@@ -692,6 +685,12 @@ export const AdminDashboard: React.FC = () => {
                               booking={b}
                               onUpdate={updateStatus}
                             />
+                            {/* Booking type badge */}
+                            {b.bookingType === "immediate" && (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-amber-400/10 text-amber-400 border border-amber-400/20">
+                                <Zap className="w-3 h-3" /> Immediate
+                              </span>
+                            )}
                           </div>
                           <p className="text-white font-medium">{b.userName}</p>
                           <div className="flex items-start gap-1.5 mt-1">
@@ -706,7 +705,7 @@ export const AdminDashboard: React.FC = () => {
                               {b.dropLocation}
                             </p>
                           </div>
-                          <div className="flex gap-4 mt-2 text-xs text-text-sub flex-wrap">
+                          <div className="flex gap-3 mt-2 text-xs text-text-sub flex-wrap">
                             <span className="flex items-center gap-1">
                               <Car className="w-3 h-3" />
                               {b.serviceType}
@@ -715,6 +714,12 @@ export const AdminDashboard: React.FC = () => {
                             <span className="flex items-center gap-1">
                               <Route className="w-3 h-3" /> {b.distance} km
                             </span>
+                            {b.estimatedDurationMins && (
+                              <span className="flex items-center gap-1">
+                                <Clock className="w-3 h-3" /> ~
+                                {b.estimatedDurationMins} min
+                              </span>
+                            )}
                             <span className="flex items-center gap-1">
                               <Calendar className="w-3 h-3" /> {b.scheduledDate}{" "}
                               {b.scheduledTime}
@@ -725,6 +730,11 @@ export const AdminDashboard: React.FC = () => {
                           <p className="text-xl font-bold text-white">
                             LKR {b.fare.toLocaleString()}
                           </p>
+                          {b.waitingSurcharge && b.waitingSurcharge > 0 && (
+                            <p className="text-xs text-amber-400 mt-0.5">
+                              +LKR {b.waitingSurcharge.toLocaleString()} waiting
+                            </p>
+                          )}
                           <p className="text-xs text-text-sub mt-1">
                             {new Date(b.createdAt).toLocaleDateString("en-LK")}
                           </p>
@@ -738,7 +748,7 @@ export const AdminDashboard: React.FC = () => {
           </div>
         )}
 
-        {/* ── Users tab ──────────────────────────────────────────────────── */}
+        {/* ── Users ── */}
         {activeTab === "users" && (
           <div className="space-y-3">
             {isLoading ? (
@@ -814,11 +824,14 @@ export const AdminDashboard: React.FC = () => {
           </div>
         )}
 
-        {/* ── Fare Management tab ────────────────────────────────────────── */}
+        {/* ── Fare Management ── */}
         {activeTab === "fares" && <AdminFareManager />}
+
+        {/* ── Booking Settings ── */}
+        {activeTab === "settings" && <AdminBookingSettings />}
       </div>
 
-      {/* User detail modal */}
+      {/* User modal */}
       <AnimatePresence>
         {selectedUser && (
           <UserModal

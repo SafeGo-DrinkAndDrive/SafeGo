@@ -1,58 +1,39 @@
-// ─── firestore.rules ──────────────────────────────────────────────────────────
-// Phase 2 additions: phone field validation
-// Phase 3 additions: /fareRules collection (admin write, all authenticated read)
-// ─────────────────────────────────────────────────────────────────────────────
 rules_version = '2';
-
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // ── Helper functions ────────────────────────────────────────────────────
+    // ── Helpers ───────────────────────────────────────────────────────────────
 
     function isSignedIn() {
       return request.auth != null;
     }
-
     function isOwner(uid) {
       return isSignedIn() && request.auth.uid == uid;
     }
-
-    // Re-reads the user doc to check role — not spoofable via client state
     function getRole() {
       return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
     }
-
     function isAdmin() {
       return isSignedIn() && getRole() in ['admin', 'superAdmin'];
     }
-
     function isSuperAdmin() {
       return isSignedIn() && getRole() == 'superAdmin';
     }
 
-    // ── /users/{uid} ────────────────────────────────────────────────────────
+    // ── /users/{uid} ──────────────────────────────────────────────────────────
 
     match /users/{uid} {
-      // Any authenticated user can read their own profile.
-      // Admins can read any profile.
-      allow read: if isOwner(uid) || isAdmin();
-
-      // On create: uid must match auth, no role elevation allowed
+      allow read:   if isOwner(uid) || isAdmin();
       allow create: if isOwner(uid)
         && request.resource.data.role == 'user'
         && request.resource.data.uid  == uid;
-
-      // On update: owners can change limited fields only.
-      // They cannot change their own role (prevents privilege escalation).
-      allow update: if isOwner(uid)
-        && !request.resource.data.diff(resource.data).affectedKeys()
-             .hasAny(['role', 'uid', 'createdAt'])
-        // Admins can update anything on any user profile
-        || isAdmin();
-
+      allow update: if (
+          isOwner(uid) &&
+          !request.resource.data.diff(resource.data)
+            .affectedKeys().hasAny(['role', 'uid', 'createdAt'])
+        ) || isAdmin();
       allow delete: if isSuperAdmin();
 
-      // ── Vehicle sub-collection ──────────────────────────────────────────
       match /vehicles/{vehicleId} {
         allow read:   if isOwner(uid) || isAdmin();
         allow create: if isOwner(uid);
@@ -61,27 +42,25 @@ service cloud.firestore {
       }
     }
 
-    // ── /bookings/{bookingId} ───────────────────────────────────────────────
+    // ── /bookings/{bookingId} ─────────────────────────────────────────────────
 
     match /bookings/{bookingId} {
-      // Users can read their own bookings; admins can read all
-      allow read: if isSignedIn()
-        && (resource.data.userId == request.auth.uid || isAdmin());
+      allow read: if isSignedIn() &&
+        (resource.data.userId == request.auth.uid || isAdmin());
 
-      // Create: authenticated user, fare > 0, userId matches auth
-      // Phase 3: fare amount comes from client but fareRuleId is stored for audit
       allow create: if isSignedIn()
         && request.resource.data.userId == request.auth.uid
         && request.resource.data.fare   is number
         && request.resource.data.fare   >  0
-        && request.resource.data.status == 'pending';
+        && request.resource.data.status == 'pending'
+        // bookingType must be either 'standard' or 'immediate'
+        && request.resource.data.bookingType in ['standard', 'immediate'];
 
-      // Status updates: users can only cancel their own pending bookings.
-      // Admins can set any status.
       allow update: if isSignedIn() && (
         (
           resource.data.userId == request.auth.uid
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt', '_serverTs'])
+          && request.resource.data.diff(resource.data)
+               .affectedKeys().hasOnly(['status', 'updatedAt', '_serverTs'])
           && request.resource.data.status == 'cancelled'
           && resource.data.status         == 'pending'
         )
@@ -91,11 +70,7 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
-    // ── /fareRules/{ruleId} ─────────────────────────────────────────────────
-    // Phase 3: Admin-managed dynamic pricing rules.
-    //
-    // Read:  any authenticated user (needed for fare preview on booking page)
-    // Write: admins only
+    // ── /fareRules/{ruleId} ───────────────────────────────────────────────────
 
     match /fareRules/{ruleId} {
       allow read:   if isSignedIn();
@@ -108,11 +83,18 @@ service cloud.firestore {
       allow delete: if isSuperAdmin();
     }
 
-    // ── /appSettings/{doc} ──────────────────────────────────────────────────
-    // Global config (future use)
+    // ── /appSettings/{docId} ─────────────────────────────────────────────────
+    // bookingPolicy — all authenticated users can read (needed at booking time)
+    // Only admins can write
+
     match /appSettings/{docId} {
       allow read:  if isSignedIn();
-      allow write: if isSuperAdmin();
+      allow write: if isAdmin();
+    }
+
+    // Catch-all deny
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }

@@ -1,165 +1,292 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { Calendar as CalendarIcon, ChevronLeft, ChevronRight } from 'lucide-react';
-import { AnimatePresence, motion } from 'framer-motion';
+// ─── src/components/CustomDatePicker.tsx ─────────────────────────────────────
+// Redesigned: premium glassmorphism calendar with:
+//   • Red accent for selected day, subtle today ring
+//   • Weekend day names dimmed
+//   • Month navigation with year jump
+//   • Smooth spring animation for dropdown
+//   • UTC-safe date handling (no off-by-one in LK timezone)
+// ─────────────────────────────────────────────────────────────────────────────
+import React, { useState, useRef, useEffect } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import { ChevronLeft, ChevronRight, CalendarDays } from "lucide-react";
 
 interface CustomDatePickerProps {
-  value: string;
+  value: string; // YYYY-MM-DD
   onChange: (date: string) => void;
-  minDate?: string;
+  minDate?: string; // YYYY-MM-DD
 }
 
-export const CustomDatePicker: React.FC<CustomDatePickerProps> = ({ value, onChange, minDate }) => {
-  const [isOpen, setIsOpen] = useState(false);
+const MONTHS = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
+const DAYS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
+
+function localToday(): string {
+  return new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD local
+}
+
+/** Parse YYYY-MM-DD safely as local midnight (no UTC shift). */
+function parseLocal(ymd: string): Date {
+  const [y, m, d] = ymd.split("-").map(Number);
+  return new Date(y, m - 1, d, 0, 0, 0, 0);
+}
+
+function toYMD(year: number, month: number, day: number): string {
+  return `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+export const CustomDatePicker: React.FC<CustomDatePickerProps> = ({
+  value,
+  onChange,
+  minDate,
+}) => {
+  const today = localToday();
+  const seed = value || today;
+  const seedDate = parseLocal(seed);
+
+  const [open, setOpen] = useState(false);
+  const [month, setMonth] = useState(seedDate.getMonth());
+  const [year, setYear] = useState(seedDate.getFullYear());
+  const [dir, setDir] = useState(1); // animation direction
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Initialize with selected date or today
-  const initialDate = value ? new Date(value) : new Date();
-  const [currentMonth, setCurrentMonth] = useState(initialDate.getMonth());
-  const [currentYear, setCurrentYear] = useState(initialDate.getFullYear());
-
   useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
-        setIsOpen(false);
-      }
+    const onOutside = (e: MouseEvent) => {
+      if (
+        containerRef.current &&
+        !containerRef.current.contains(e.target as Node)
+      )
+        setOpen(false);
     };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    document.addEventListener("mousedown", onOutside);
+    return () => document.removeEventListener("mousedown", onOutside);
   }, []);
 
-  const daysInMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
-  const firstDayOfMonth = new Date(currentYear, currentMonth, 1).getDay();
-  
-  const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-  const dayNames = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const firstDayOffset = new Date(year, month, 1).getDay();
+  const minDateObj = minDate ? parseLocal(minDate) : null;
 
-  const handlePrevMonth = () => {
-    if (currentMonth === 0) {
-      setCurrentMonth(11);
-      setCurrentYear(currentYear - 1);
-    } else {
-      setCurrentMonth(currentMonth - 1);
+  const navigate = (delta: number) => {
+    setDir(delta);
+    let m = month + delta;
+    let y = year;
+    if (m < 0) {
+      m = 11;
+      y--;
     }
-  };
-
-  const handleNextMonth = () => {
-    if (currentMonth === 11) {
-      setCurrentMonth(0);
-      setCurrentYear(currentYear + 1);
-    } else {
-      setCurrentMonth(currentMonth + 1);
+    if (m > 11) {
+      m = 0;
+      y++;
     }
+    setMonth(m);
+    setYear(y);
   };
 
-  const handleSelectDate = (day: number) => {
-    const selectedDate = new Date(currentYear, currentMonth, day);
-    // Format to YYYY-MM-DD
-    const year = selectedDate.getFullYear();
-    const month = String(selectedDate.getMonth() + 1).padStart(2, '0');
-    const d = String(selectedDate.getDate()).padStart(2, '0');
-    onChange(`${year}-${month}-${d}`);
-    setIsOpen(false);
+  const handleSelect = (day: number) => {
+    const ymd = toYMD(year, month, day);
+    onChange(ymd);
+    setOpen(false);
   };
 
-  // Min date logic
-  const minDateObj = minDate ? new Date(minDate) : new Date(0);
-  minDateObj.setHours(0,0,0,0);
+  const handleToday = () => {
+    const t = parseLocal(today);
+    setMonth(t.getMonth());
+    setYear(t.getFullYear());
+    onChange(today);
+    setOpen(false);
+  };
 
-  const displayValue = value ? new Date(value).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'Select Date';
+  const isDisabled = (day: number): boolean => {
+    if (!minDateObj) return false;
+    const d = new Date(year, month, day, 0, 0, 0, 0);
+    return d < minDateObj;
+  };
+
+  const isSelected = (day: number): boolean => {
+    if (!value) return false;
+    return value === toYMD(year, month, day);
+  };
+
+  const isToday = (day: number): boolean => today === toYMD(year, month, day);
+
+  // Display label
+  const label = value
+    ? parseLocal(value).toLocaleDateString("en-LK", {
+        day: "numeric",
+        month: "short",
+        year: "numeric",
+      })
+    : "Pick a date";
 
   return (
     <div className="relative" ref={containerRef}>
-      <div 
-        className="relative cursor-pointer"
-        onClick={() => setIsOpen(!isOpen)}
+      {/* Trigger */}
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl border transition-all text-left
+          ${
+            open
+              ? "border-brand-red bg-brand-red/5 shadow-[0_0_0_3px_rgba(220,38,38,0.12)]"
+              : "border-white/12 bg-background-darker/50 hover:border-white/25"
+          }`}
       >
-        <CalendarIcon className="absolute left-4 top-3.5 h-4 w-4 text-text-sub pointer-events-none" />
-        <div className={`w-full bg-background-darker/50 border ${isOpen ? 'border-brand-red' : 'border-white/10'} rounded-xl py-3 pl-11 pr-3 text-white transition-all`}>
-          {value ? displayValue : <span className="text-text-sub">mm/dd/yyyy</span>}
-        </div>
-      </div>
-
-      <AnimatePresence>
-        {isOpen && (
-          <motion.div 
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 10 }}
-            className="absolute top-full left-0 mt-2 p-4 w-72 bg-[#1A1A1A]/95 backdrop-blur-xl border border-white/10 rounded-xl shadow-[0_8px_32px_rgba(0,0,0,0.5)] z-50"
+        <CalendarDays
+          className={`w-4 h-4 flex-shrink-0 transition-colors ${open ? "text-brand-red" : "text-text-sub"}`}
+        />
+        <span
+          className={`text-sm font-medium flex-1 ${value ? "text-white" : "text-text-sub"}`}
+        >
+          {label}
+        </span>
+        {value && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onChange("");
+            }}
+            className="w-5 h-5 rounded-full bg-white/10 flex items-center justify-center text-text-sub hover:bg-white/20 hover:text-white transition-all text-xs"
           >
+            ×
+          </button>
+        )}
+      </button>
+
+      {/* Dropdown */}
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            initial={{ opacity: 0, y: 6, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 6, scale: 0.98 }}
+            transition={{ type: "spring", stiffness: 400, damping: 30 }}
+            className="absolute top-full left-0 mt-2 z-50 w-80 p-4
+              bg-[#141414]/96 backdrop-blur-2xl
+              border border-white/10 rounded-2xl
+              shadow-[0_20px_60px_rgba(0,0,0,0.7)]"
+          >
+            {/* Month header */}
             <div className="flex items-center justify-between mb-4">
-              <button onClick={handlePrevMonth} className="p-1 hover:bg-white/10 rounded-lg text-text-sub hover:text-white transition-colors">
-                <ChevronLeft className="w-5 h-5" />
+              <button
+                type="button"
+                onClick={() => navigate(-1)}
+                className="w-8 h-8 flex items-center justify-center rounded-lg text-text-sub hover:text-white hover:bg-white/10 transition-all"
+              >
+                <ChevronLeft className="w-4 h-4" />
               </button>
-              <div className="text-white font-medium">
-                {monthNames[currentMonth]} {currentYear}
+
+              <div className="text-center">
+                <p className="text-sm font-semibold text-white">
+                  {MONTHS[month]}
+                </p>
+                <p className="text-xs text-text-sub">{year}</p>
               </div>
-              <button onClick={handleNextMonth} className="p-1 hover:bg-white/10 rounded-lg text-text-sub hover:text-white transition-colors">
-                <ChevronRight className="w-5 h-5" />
+
+              <button
+                type="button"
+                onClick={() => navigate(1)}
+                className="w-8 h-8 flex items-center justify-center rounded-lg text-text-sub hover:text-white hover:bg-white/10 transition-all"
+              >
+                <ChevronRight className="w-4 h-4" />
               </button>
             </div>
 
-            <div className="grid grid-cols-7 gap-1 mb-2">
-              {dayNames.map(day => (
-                <div key={day} className="text-center text-xs font-medium text-text-sub py-1">
-                  {day}
+            {/* Day labels */}
+            <div className="grid grid-cols-7 mb-2">
+              {DAYS.map((d, i) => (
+                <div
+                  key={d}
+                  className={`text-center text-xs font-medium py-1 ${
+                    i === 0 || i === 6 ? "text-brand-red/60" : "text-text-sub"
+                  }`}
+                >
+                  {d}
                 </div>
               ))}
             </div>
 
-            <div className="grid grid-cols-7 gap-1">
-              {Array.from({ length: firstDayOfMonth }).map((_, i) => (
-                <div key={`empty-${i}`} />
+            {/* Day grid */}
+            <motion.div
+              key={`${year}-${month}`}
+              initial={{ opacity: 0, x: dir * 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ duration: 0.18 }}
+              className="grid grid-cols-7 gap-0.5"
+            >
+              {Array.from({ length: firstDayOffset }).map((_, i) => (
+                <div key={`e${i}`} />
               ))}
-              {Array.from({ length: daysInMonth }).map((_, i) => {
-                const day = i + 1;
-                const dateObj = new Date(currentYear, currentMonth, day);
-                dateObj.setHours(0,0,0,0);
-                const isDisabled = dateObj < minDateObj;
-                
-                const isSelected = value && 
-                  new Date(value).getDate() === day && 
-                  new Date(value).getMonth() === currentMonth && 
-                  new Date(value).getFullYear() === currentYear;
+              {Array.from({ length: daysInMonth }, (_, i) => i + 1).map(
+                (day) => {
+                  const disabled = isDisabled(day);
+                  const selected = isSelected(day);
+                  const todayDay = isToday(day);
+                  const dow = (firstDayOffset + day - 1) % 7;
+                  const isWeekend = dow === 0 || dow === 6;
 
-                return (
-                  <button
-                    key={day}
-                    disabled={isDisabled}
-                    onClick={() => handleSelectDate(day)}
-                    className={`w-8 h-8 rounded-lg flex items-center justify-center text-sm transition-all
-                      ${isDisabled ? 'text-white/20 cursor-not-allowed' : 'hover:bg-white/10 text-white'}
-                      ${isSelected ? 'bg-brand-red text-white hover:bg-brand-red font-medium' : ''}
+                  return (
+                    <button
+                      key={day}
+                      type="button"
+                      disabled={disabled}
+                      onClick={() => handleSelect(day)}
+                      className={`
+                      relative h-9 w-full rounded-lg flex items-center justify-center text-sm
+                      transition-all duration-150 font-medium
+                      ${
+                        disabled
+                          ? "text-white/15 cursor-not-allowed"
+                          : selected
+                            ? "bg-brand-red text-white shadow-[0_0_12px_rgba(220,38,38,0.4)]"
+                            : todayDay
+                              ? "text-brand-red hover:bg-brand-red/15"
+                              : isWeekend
+                                ? "text-white/60 hover:bg-white/8 hover:text-white"
+                                : "text-white hover:bg-white/8"
+                      }
                     `}
-                  >
-                    {day}
-                  </button>
-                );
-              })}
-            </div>
-            
-            <div className="flex justify-between mt-4 pt-4 border-t border-white/10">
-               <button 
-                 onClick={() => { onChange(''); setIsOpen(false); }}
-                 className="text-xs text-text-sub hover:text-white transition-colors"
-               >
-                 Clear
-               </button>
-               <button 
-                 onClick={() => {
-                   const today = new Date();
-                   const year = today.getFullYear();
-                   const month = String(today.getMonth() + 1).padStart(2, '0');
-                   const d = String(today.getDate()).padStart(2, '0');
-                   onChange(`${year}-${month}-${d}`);
-                   setCurrentMonth(today.getMonth());
-                   setCurrentYear(today.getFullYear());
-                   setIsOpen(false);
-                 }}
-                 className="text-xs text-brand-red hover:text-brand-red/80 font-medium transition-colors"
-               >
-                 Today
-               </button>
+                    >
+                      {day}
+                      {todayDay && !selected && (
+                        <span className="absolute bottom-1 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full bg-brand-red" />
+                      )}
+                    </button>
+                  );
+                },
+              )}
+            </motion.div>
+
+            {/* Footer */}
+            <div className="flex items-center justify-between mt-4 pt-3 border-t border-white/8">
+              <button
+                type="button"
+                onClick={() => {
+                  onChange("");
+                  setOpen(false);
+                }}
+                className="text-xs text-text-sub hover:text-white transition-colors"
+              >
+                Clear
+              </button>
+              <button
+                type="button"
+                onClick={handleToday}
+                className="text-xs font-semibold text-brand-red hover:text-brand-red/80 transition-colors"
+              >
+                Today
+              </button>
             </div>
           </motion.div>
         )}

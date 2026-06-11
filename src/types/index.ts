@@ -1,58 +1,67 @@
 // ─── src/types/index.ts ───────────────────────────────────────────────────────
-// Phase 2 additions: emergencyContact, address on AppUser
-// Phase 3 additions: FareRule, FareRuleTier, FarePricingResult
-// ─────────────────────────────────────────────────────────────────────────────
 
 // ── Auth & Users ──────────────────────────────────────────────────────────────
 
-export type UserRole = 'user' | 'driver' | 'admin' | 'superAdmin';
+export type UserRole = "user" | "driver" | "admin" | "superAdmin";
 
 export interface AppUser {
-  uid:               string;
-  name:              string;
-  email:             string;
-  phone:             string;
-  emergencyContact?: string;   // Phase 2: optional, collected at PhoneSetup
-  address?:          string;   // Phase 2: optional home address
-  role:              UserRole;
-  photoURL?:         string;
+  uid: string;
+  name: string;
+  email: string;
+  phone: string;
+  emergencyContact?: string;
+  address?: string;
+  role: UserRole;
+  photoURL?: string;
   vehicleRegistered: boolean;
-  createdAt:         string;
+  suspended?: boolean;
+  createdAt: string;
 }
 
 // ── Vehicle ───────────────────────────────────────────────────────────────────
 
-export type VehicleType = 'Car' | 'SUV' | 'Van' | 'Pickup';
+export type VehicleType = "Car" | "SUV" | "Van" | "Pickup";
 
 export interface VehicleInsurance {
-  provider:     string;
+  provider: string;
   policyNumber: string;
-  expiryDate:   string;
+  expiryDate: string;
 }
 
 export interface VehicleLicense {
   licenseNumber: string;
-  expiryDate:    string;
+  expiryDate: string;
 }
 
 export interface Vehicle {
-  id:          string;
-  userId:      string;
+  id: string;
+  userId: string;
   vehicleType: VehicleType;
-  make:        string;
-  model:       string;
-  year:        string;
+  make: string;
+  model: string;
+  year: string;
   plateNumber: string;
-  color:       string;
-  insurance:   VehicleInsurance;
-  license:     VehicleLicense;
-  createdAt:   string;
+  color: string;
+  insurance: VehicleInsurance;
+  license: VehicleLicense;
+  createdAt: string;
 }
 
 // ── Bookings ──────────────────────────────────────────────────────────────────
 
-export type ServiceType   = 'Distance' | 'Hourly' | 'Full Day';
-export type BookingStatus = 'pending' | 'confirmed' | 'ongoing' | 'completed' | 'cancelled';
+export type ServiceType = "Distance" | "Hourly" | "Full Day";
+export type BookingStatus =
+  | "pending"
+  | "confirmed"
+  | "ongoing"
+  | "completed"
+  | "cancelled";
+
+/**
+ * standard  — pickup ≥ immediateThresholdMins away → normal fare
+ * immediate — pickup between minAdvanceMins and immediateThresholdMins → fixed fare
+ */
+export type BookingType = "standard" | "immediate";
 
 export interface LatLng {
   lat: number;
@@ -62,137 +71,146 @@ export interface LatLng {
 export interface PlaceResult {
   address: string;
   placeId: string;
-  coords:  LatLng;
+  coords: LatLng;
 }
 
 export interface Booking {
-  id:             string;
-  userId:         string;
-  userName:       string;
-  userPhone:      string;
-  vehicleId?:     string;
+  id: string;
+  userId: string;
+  userName: string;
+  userPhone: string;
+  vehicleId?: string;
   pickupLocation: string;
-  pickupCoords:   LatLng;
-  dropLocation:   string;
-  dropCoords:     LatLng;
-  distance:       number;
-  duration?:      number;
-  serviceType:    ServiceType;
+  pickupCoords: LatLng;
+  dropLocation: string;
+  dropCoords: LatLng;
+  distance: number;
+  duration?: number; // legacy hours field
+  estimatedDurationMins?: number; // F2: minutes from Maps
+  serviceType: ServiceType;
   serviceDetail?: string;
-  fare:           number;
-  fareRuleId?:    string;   // Phase 3: which fare rule was used
-  status:         BookingStatus;
-  scheduledDate:  string;
-  scheduledTime:  string;
-  createdAt:      string;
+  fare: number;
+  fareRuleId?: string;
+  bookingType: BookingType; // F1
+  waitingSurcharge?: number; // F3: added after trip
+  status: BookingStatus;
+  scheduledDate: string;
+  scheduledTime: string;
+  createdAt: string;
 }
 
 export interface CreateBookingPayload {
   pickupLocation: string;
-  pickupCoords:   LatLng;
-  dropLocation:   string;
-  dropCoords:     LatLng;
-  serviceType:    ServiceType;
+  pickupCoords: LatLng;
+  dropLocation: string;
+  dropCoords: LatLng;
+  serviceType: ServiceType;
   serviceDetail?: string;
-  scheduledDate:  string;
-  scheduledTime:  string;
+  scheduledDate: string;
+  scheduledTime: string;
 }
 
 export interface UpdateStatusPayload {
   status: BookingStatus;
 }
 
-// ── Fare Rules (Phase 3) ──────────────────────────────────────────────────────
-//
-// Stored in Firestore at: /fareRules/{ruleId}
-//
-// A FareRule defines pricing for one service type (Distance / Hourly / Full Day).
-// Admin can create multiple rules, enable/disable them, and SafeGo always
-// uses the single active rule per service type.
-//
-// Distance rules use tiers: each tier defines a km range and a per-km rate.
-//   Example: 0–10 km → 180 LKR/km, 10–20 km → 150 LKR/km, 20+ → 130 LKR/km
-//
-// Hourly / Full Day rules use flatRates keyed by duration:
-//   Example: { '2h': 3500, '4h': 5000, '6h': 7000 }
+// ── Booking Policy (admin-configurable) ───────────────────────────────────────
+// Stored at: /appSettings/bookingPolicy
+
+export interface BookingPolicy {
+  minAdvanceMins: number; // hard block below this — default 40
+  immediateThresholdMins: number; // immediate booking window — default 90
+  immediateBaseFare: number; // fixed fare for immediate — default 3000
+  freeWaitingMins: number; // grace period — default 15
+  waitingIntervalMins: number; // billing block — default 15
+  waitingChargePerInterval: number; // LKR per block — default 300
+  updatedAt: string;
+  updatedBy: string;
+}
+
+export const DEFAULT_BOOKING_POLICY: Omit<
+  BookingPolicy,
+  "updatedAt" | "updatedBy"
+> = {
+  minAdvanceMins: 40,
+  immediateThresholdMins: 90,
+  immediateBaseFare: 3000,
+  freeWaitingMins: 15,
+  waitingIntervalMins: 15,
+  waitingChargePerInterval: 300,
+};
+
+// ── Fare ──────────────────────────────────────────────────────────────────────
 
 export interface FareRuleTier {
-  minKm:     number;   // inclusive lower bound (first tier is always 0)
-  maxKm:     number;   // exclusive upper bound (last tier uses Infinity → stored as 9999)
-  ratePerKm: number;   // LKR per km for this distance band
-  baseCharge: number;  // flat base charge added for any booking in this tier
+  minKm: number;
+  maxKm: number;
+  ratePerKm: number;
+  baseCharge: number;
 }
 
 export interface FareRule {
-  id:          string;
-  name:        string;            // e.g. "Standard Distance Rate"
-  serviceType: ServiceType;       // which booking type this applies to
-  isActive:    boolean;           // only one active rule per serviceType at a time
+  id: string;
+  name: string;
+  serviceType: ServiceType;
+  isActive: boolean;
   description: string;
-
-  // Distance-based rules
-  tiers?:    FareRuleTier[];
-
-  // Flat-rate rules (Hourly / Full Day)
-  // keys are duration strings: '1h', '2h', '4h', '6h', '8h', '10h', '12h'
+  tiers?: FareRuleTier[];
   flatRates?: Record<string, number>;
-
-  createdAt:   string;
-  updatedAt:   string;
-  createdBy:   string;   // admin uid
+  createdAt: string;
+  updatedAt: string;
+  createdBy: string;
 }
 
-// Result returned by the dynamic fare calculator
 export interface FarePricingResult {
-  fare:         number;
-  distanceKm:   number;
+  fare: number;
+  distanceKm: number;
   durationMins: number;
-  fareRuleId:   string;
+  fareRuleId: string;
   fareRuleName: string;
   breakdown: {
-    baseCharge:     number;
+    baseCharge: number;
     distanceCharge: number;
-    ratePerKm:      number;
-    tierUsed?:      string;   // e.g. "10–20 km @ 150/km"
-    total:          number;
+    ratePerKm: number;
+    tierUsed?: string;
+    total: number;
   };
 }
 
-// Legacy — kept for backward compat with components that still use FareResult
 export interface FareResult {
-  distanceKm:   number;
+  distanceKm: number;
   durationMins: number;
-  fare:         number;
+  fare: number;
   breakdown: {
-    ratePerKm:      number;
-    distanceKm:     number;
-    baseCharge:     number;
+    ratePerKm: number;
+    distanceKm: number;
+    baseCharge: number;
     distanceCharge: number;
-    total:          number;
+    total: number;
   };
 }
 
 export interface FareEstimate {
-  fare:      number;
-  distance:  number;
+  fare: number;
+  distance: number;
   duration?: number;
   breakdown: { base: number; variable: number; total: number };
 }
 
 export interface FareBreakdown {
-  distance:      number;
-  duration:      number;
+  distance: number;
+  duration: number;
   estimatedFare: number;
   breakdown: {
-    baseFare?:     number;
+    baseFare?: number;
     distanceFare?: number;
-    hourlyFare?:   number;
-    packageFare?:  number;
-    total:         number;
+    hourlyFare?: number;
+    packageFare?: number;
+    total: number;
   };
 }
 
 export interface ApiError {
   message: string;
-  code?:   string;
+  code?: string;
 }

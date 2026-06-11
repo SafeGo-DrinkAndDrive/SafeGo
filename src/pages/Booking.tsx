@@ -1,8 +1,11 @@
 // ─── src/pages/Booking.tsx ────────────────────────────────────────────────────
-// Fixes applied:
-//   • LocationInput prop corrected: onSelect → onChange (matches LocationInputProps)
-//   • CustomDatePicker prop corrected: min → minDate (matches CustomDatePickerProps)
-//   • Uses fareRulesService (dynamic pricing) — no hardcoded rates
+// Features:
+//   F1 — Time restrictions:
+//         blocked (<minAdvanceMins) | immediate (minAdvance..threshold) | standard
+//         Immediate bookings get fixed fare (immediateBaseFare), not distance calc
+//   F2 — Estimated trip duration from Maps shown on fare card
+//   F3 — Waiting surcharge policy explained to user before submit
+//   F4 — Beautiful date/time pickers from redesigned components
 // ─────────────────────────────────────────────────────────────────────────────
 import React, { useState, useCallback, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
@@ -20,6 +23,10 @@ import {
   Receipt,
   TrendingUp,
   Info,
+  Zap,
+  ShieldCheck,
+  Timer,
+  CalendarDays,
 } from "lucide-react";
 import { GlassCard } from "../components/GlassCard";
 import { NeonButton } from "../components/NeonButton";
@@ -33,71 +40,188 @@ import {
   calculateFlatFareDynamic,
   reverseGeocode,
 } from "../services/fareRulesService";
+import {
+  getBookingPolicy,
+  classifyBookingTime,
+  toBookingType,
+  getMinutesUntilPickup,
+  type TimeClassification,
+} from "../services/bookingPolicyService";
 import type {
   ServiceType,
   PlaceResult,
   CreateBookingPayload,
   FarePricingResult,
+  BookingPolicy,
 } from "../types";
 
-// ── Fare breakdown card ───────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function fmtMins(mins: number): string {
+  if (!mins || mins <= 0) return "—";
+  if (mins < 60) return `${mins} min`;
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return m ? `${h}h ${m}m` : `${h}h`;
+}
+
+// ── Time classification banner ────────────────────────────────────────────────
+
+const TimeBanner: React.FC<{
+  cls: TimeClassification;
+  policy: BookingPolicy;
+  minsAway: number;
+}> = ({ cls, policy, minsAway }) => {
+  if (cls === "standard") return null;
+
+  if (cls === "blocked") {
+    return (
+      <motion.div
+        key="blocked"
+        initial={{ opacity: 0, y: -6 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0 }}
+        className="flex items-start gap-3 p-4 rounded-xl bg-red-500/10 border border-red-500/25"
+      >
+        <AlertCircle className="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" />
+        <div>
+          <p className="text-sm font-semibold text-red-400">
+            Can't book this time slot
+          </p>
+          <p className="text-xs text-red-300/80 mt-0.5 leading-relaxed">
+            Bookings must be placed at least{" "}
+            <span className="font-bold text-red-300">
+              {policy.minAdvanceMins} minutes
+            </span>{" "}
+            before pickup. Your selected time is only{" "}
+            <span className="font-bold text-red-300">
+              {Math.max(0, Math.floor(minsAway))} minutes
+            </span>{" "}
+            away. Please choose a later slot.
+          </p>
+        </div>
+      </motion.div>
+    );
+  }
+
+  // immediate
+  return (
+    <motion.div
+      key="immediate"
+      initial={{ opacity: 0, y: -6 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0 }}
+      className="flex items-start gap-3 p-4 rounded-xl bg-amber-500/10 border border-amber-500/25"
+    >
+      <Zap className="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" />
+      <div>
+        <p className="text-sm font-semibold text-amber-400 mb-0.5">
+          Immediate Booking — pickup in ~{Math.floor(minsAway)} min
+        </p>
+        <p className="text-xs text-amber-300/80 leading-relaxed">
+          Because your pickup is within{" "}
+          <span className="font-bold text-amber-300">
+            {policy.immediateThresholdMins} minutes
+          </span>
+          , this is treated as an immediate booking. A flat rate of{" "}
+          <span className="font-bold text-amber-300">
+            LKR {policy.immediateBaseFare.toLocaleString()}
+          </span>{" "}
+          applies regardless of distance. Driver availability depends on
+          confirmation.
+        </p>
+      </div>
+    </motion.div>
+  );
+};
+
+// ── Fare card ─────────────────────────────────────────────────────────────────
 
 const FareCard: React.FC<{
   fare: FarePricingResult;
   serviceType: ServiceType;
-}> = ({ fare, serviceType }) => (
-  <motion.div
-    initial={{ opacity: 0, y: 8 }}
-    animate={{ opacity: 1, y: 0 }}
-    exit={{ opacity: 0, y: -8 }}
-  >
-    <GlassCard glowColor="red" className="overflow-hidden">
+  cls: TimeClassification;
+  policy: BookingPolicy;
+}> = ({ fare, serviceType, cls, policy }) => {
+  const isImmediate = cls === "immediate";
+  const displayFare = isImmediate ? policy.immediateBaseFare : fare.fare;
+
+  return (
+    <GlassCard glowColor={isImmediate ? "gray" : "red"}>
       {/* Header */}
-      <div className="flex items-center gap-2 mb-5 pb-4 border-b border-white/8">
-        <div className="p-2 bg-brand-red/15 rounded-lg">
-          <Receipt className="w-4 h-4 text-brand-red" />
+      <div className="flex items-center gap-3 mb-4 pb-3 border-b border-white/8">
+        <div
+          className={`p-2 rounded-lg ${isImmediate ? "bg-amber-500/15" : "bg-brand-red/15"}`}
+        >
+          {isImmediate ? (
+            <Zap className="w-4 h-4 text-amber-400" />
+          ) : (
+            <Receipt className="w-4 h-4 text-brand-red" />
+          )}
         </div>
         <div>
-          <p className="text-sm font-semibold text-white">Fare Estimate</p>
+          <p className="text-sm font-semibold text-white">
+            {isImmediate ? "Immediate Booking Rate" : "Fare Estimate"}
+          </p>
           <p className="text-xs text-text-sub">
-            {fare.fareRuleName} · Based on shortest route
+            {isImmediate
+              ? "Flat rate · distance not factored"
+              : `${fare.fareRuleName} · shortest route`}
           </p>
         </div>
+        {!isImmediate && (
+          <span className="ml-auto text-xs px-2 py-0.5 bg-green-400/10 text-green-400 border border-green-400/20 rounded-full">
+            Standard
+          </span>
+        )}
+        {isImmediate && (
+          <span className="ml-auto text-xs px-2 py-0.5 bg-amber-400/10 text-amber-400 border border-amber-400/20 rounded-full">
+            Immediate
+          </span>
+        )}
       </div>
 
-      {/* Stats */}
-      <div className="space-y-3 mb-5">
+      {/* Stats rows */}
+      <div className="space-y-3 mb-4">
         {serviceType === "Distance" && (
           <>
             <div className="flex justify-between items-center">
               <div className="flex items-center gap-2 text-text-sub text-sm">
                 <Route className="w-3.5 h-3.5" /> Distance
               </div>
-              <span className="text-white font-medium">
+              <span
+                className={`font-medium ${isImmediate ? "text-text-sub" : "text-white"}`}
+              >
                 {fare.distanceKm} km
+                {isImmediate && (
+                  <span className="text-xs ml-1 opacity-50">(info only)</span>
+                )}
               </span>
             </div>
-            <div className="flex justify-between items-center">
-              <div className="flex items-center gap-2 text-text-sub text-sm">
-                <Clock className="w-3.5 h-3.5" /> Est. time
+
+            {/* F2 — estimated duration */}
+            {fare.durationMins > 0 && (
+              <div className="flex justify-between items-center">
+                <div className="flex items-center gap-2 text-text-sub text-sm">
+                  <Timer className="w-3.5 h-3.5" /> Est. travel time
+                </div>
+                <span className="text-white font-medium">
+                  {fmtMins(fare.durationMins)}
+                </span>
               </div>
-              <span className="text-white font-medium">
-                {fare.durationMins >= 60
-                  ? `${Math.floor(fare.durationMins / 60)}h ${fare.durationMins % 60}m`
-                  : `${fare.durationMins} min`}
-              </span>
-            </div>
-            {fare.breakdown.tierUsed && (
+            )}
+
+            {!isImmediate && fare.breakdown.tierUsed && (
               <div className="flex justify-between items-start">
                 <div className="flex items-center gap-2 text-text-sub text-sm">
                   <TrendingUp className="w-3.5 h-3.5" /> Rate
                 </div>
-                <span className="text-white font-medium text-right text-sm">
+                <span className="text-white font-medium text-right text-sm max-w-[55%] leading-snug">
                   {fare.breakdown.tierUsed}
                 </span>
               </div>
             )}
-            {fare.breakdown.baseCharge > 0 && (
+            {!isImmediate && fare.breakdown.baseCharge > 0 && (
               <div className="flex justify-between items-center">
                 <div className="flex items-center gap-2 text-text-sub text-sm">
                   <Receipt className="w-3.5 h-3.5" /> Base charge
@@ -109,55 +233,133 @@ const FareCard: React.FC<{
             )}
           </>
         )}
+
         {serviceType !== "Distance" && (
           <div className="flex justify-between items-center">
             <div className="flex items-center gap-2 text-text-sub text-sm">
               <Clock className="w-3.5 h-3.5" /> Duration
             </div>
             <span className="text-white font-medium">
-              {Math.floor(fare.durationMins / 60)} hours
+              {fmtMins(fare.durationMins)}
             </span>
           </div>
         )}
       </div>
 
-      {/* Total */}
-      <div className="bg-gradient-to-r from-brand-red/15 to-brand-red/5 border border-brand-red/25 rounded-xl p-4 flex items-center justify-between">
+      {/* Total fare */}
+      <div
+        className={`rounded-xl p-4 flex items-center justify-between border
+        ${isImmediate ? "bg-amber-500/8 border-amber-500/20" : "bg-brand-red/8 border-brand-red/20"}`}
+      >
         <div>
-          <p className="text-xs text-text-sub mb-0.5">Total Fare</p>
-          <p className="text-xs text-brand-red/70">*Estimate only</p>
+          <p className="text-xs text-text-sub">Total Fare</p>
+          <p className="text-xs text-text-sub/50 mt-0.5">
+            *Estimate — subject to waiting charges
+          </p>
         </div>
-        <p className="text-3xl font-bold text-brand-red tracking-tight">
-          LKR {fare.fare.toLocaleString()}
+        <p
+          className={`text-3xl font-bold tracking-tight
+          ${isImmediate ? "text-amber-400" : "text-brand-red"}`}
+        >
+          LKR {displayFare.toLocaleString()}
         </p>
       </div>
 
-      {fare.fareRuleId !== "fallback" && (
-        <div className="flex items-center gap-1.5 mt-3 text-xs text-text-sub">
-          <Info className="w-3 h-3" />
-          Priced using: {fare.fareRuleName}
-        </div>
-      )}
-      {fare.fareRuleId === "fallback" && (
-        <div className="flex items-center gap-1.5 mt-3 text-xs text-yellow-400">
-          <AlertCircle className="w-3 h-3" />
-          No pricing rule configured — using default rates
+      {!isImmediate && fare.fareRuleId === "fallback" && (
+        <div className="flex items-center gap-1.5 mt-2 text-xs text-yellow-400">
+          <AlertCircle className="w-3 h-3" /> No pricing rule set — default
+          rates applied
         </div>
       )}
     </GlassCard>
-  </motion.div>
+  );
+};
+
+// ── Waiting policy notice ─────────────────────────────────────────────────────
+
+const WaitingPolicy: React.FC<{ policy: BookingPolicy }> = ({ policy }) => (
+  <div className="p-4 rounded-xl bg-blue-500/5 border border-blue-500/20 space-y-2.5">
+    <div className="flex items-center gap-2 mb-1">
+      <ShieldCheck className="w-4 h-4 text-blue-400 flex-shrink-0" />
+      <p className="text-sm font-semibold text-white">
+        Trip Duration & Waiting Policy
+      </p>
+    </div>
+    {[
+      `Estimated travel time is calculated using Google Maps and shown in the fare card above.`,
+      `The first ${policy.freeWaitingMins} minutes of delays or waiting beyond the estimated trip duration are free — no extra charge.`,
+      `After the free grace period, a surcharge of LKR ${policy.waitingChargePerInterval.toLocaleString()} applies for every ${policy.waitingIntervalMins} minutes of additional waiting time.`,
+      `Any applicable waiting charges are added to your final fare at the end of the trip.`,
+    ].map((line, i) => (
+      <div key={i} className="flex items-start gap-2">
+        <span className="text-blue-400 flex-shrink-0 mt-0.5 text-xs">•</span>
+        <p className="text-xs text-blue-300/80 leading-relaxed">{line}</p>
+      </div>
+    ))}
+  </div>
 );
 
-// ── Service type selector ─────────────────────────────────────────────────────
+// ── Date/Time selector with labels ────────────────────────────────────────────
 
-const SERVICE_TYPES: { type: ServiceType; label: string }[] = [
-  { type: "Distance", label: "By Distance" },
-  { type: "Hourly", label: "Hourly" },
-  { type: "Full Day", label: "Full Day" },
+const DateTimeSelector: React.FC<{
+  scheduledDate: string;
+  scheduledTime: string;
+  onDateChange: (v: string) => void;
+  onTimeChange: (v: string) => void;
+  todayLocal: string;
+}> = ({
+  scheduledDate,
+  scheduledTime,
+  onDateChange,
+  onTimeChange,
+  todayLocal,
+}) => (
+  <div className="space-y-4">
+    <div className="flex items-center gap-2 text-text-sub mb-1">
+      <CalendarDays className="w-4 h-4" />
+      <span className="text-xs uppercase tracking-wide">
+        Pickup Date & Time
+      </span>
+    </div>
+    <div className="grid grid-cols-2 gap-3">
+      <div>
+        <label className="block text-xs text-text-sub mb-1.5">Date</label>
+        <CustomDatePicker
+          value={scheduledDate}
+          onChange={onDateChange}
+          minDate={todayLocal}
+        />
+      </div>
+      <div>
+        <label className="block text-xs text-text-sub mb-1.5">Time</label>
+        <CustomTimePicker value={scheduledTime} onChange={onTimeChange} />
+      </div>
+    </div>
+  </div>
+);
+
+// ── Service types ─────────────────────────────────────────────────────────────
+
+const SERVICE_TYPES: {
+  type: ServiceType;
+  label: string;
+  icon: React.ReactNode;
+}[] = [
+  {
+    type: "Distance",
+    label: "By Distance",
+    icon: <Route className="w-4 h-4" />,
+  },
+  { type: "Hourly", label: "Hourly", icon: <Clock className="w-4 h-4" /> },
+  {
+    type: "Full Day",
+    label: "Full Day",
+    icon: <CalendarDays className="w-4 h-4" />,
+  },
 ];
 
-const HOURLY_OPTIONS = ["1h", "2h", "3h", "4h", "6h", "12h"];
-const FULLDAY_OPTIONS = ["4h", "6h", "8h", "10h", "12h"];
+const HOURLY_OPTS = ["1h", "2h", "3h", "4h", "6h", "12h"];
+const FULLDAY_OPTS = ["4h", "6h", "8h", "10h", "12h"];
 
 // ── Main component ────────────────────────────────────────────────────────────
 
@@ -182,11 +384,33 @@ export const Booking: React.FC = () => {
   const [fareError, setFareError] = useState<string | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
 
+  const [policy, setPolicy] = useState<BookingPolicy | null>(null);
+  const [timeCls, setTimeCls] = useState<TimeClassification>("standard");
+  const [minsAway, setMinsAway] = useState<number>(Infinity);
+
   const [isBooking, setIsBooking] = useState(false);
   const [bookingErr, setBookingErr] = useState<string | null>(null);
 
-  // ── Recalculate fare ──────────────────────────────────────────────────────
+  // Fetch policy once
+  useEffect(() => {
+    getBookingPolicy()
+      .then(setPolicy)
+      .catch(() => {});
+  }, []);
 
+  // Re-classify on date/time change
+  useEffect(() => {
+    if (!policy || !scheduledDate || !scheduledTime) {
+      setTimeCls("standard");
+      setMinsAway(Infinity);
+      return;
+    }
+    const mins = getMinutesUntilPickup(scheduledDate, scheduledTime);
+    setMinsAway(mins);
+    setTimeCls(classifyBookingTime(scheduledDate, scheduledTime, policy));
+  }, [scheduledDate, scheduledTime, policy]);
+
+  // Fare calculation
   const recalcFare = useCallback(
     (
       p: PlaceResult | null,
@@ -206,8 +430,8 @@ export const Booking: React.FC = () => {
         debounceRef.current = setTimeout(async () => {
           try {
             setFareResult(await calculateDynamicFare(p.coords, d.coords));
-          } catch (err: unknown) {
-            setFareError((err as Error).message ?? "Could not calculate fare.");
+          } catch (e: unknown) {
+            setFareError((e as Error).message ?? "Could not calculate fare.");
             setFareResult(null);
           } finally {
             setCalculating(false);
@@ -223,8 +447,8 @@ export const Booking: React.FC = () => {
                 sDetail,
               ),
             );
-          } catch (err: unknown) {
-            setFareError((err as Error).message ?? "Could not load pricing.");
+          } catch (e: unknown) {
+            setFareError((e as Error).message ?? "Could not load pricing.");
             setFareResult(null);
           } finally {
             setCalculating(false);
@@ -240,11 +464,10 @@ export const Booking: React.FC = () => {
     return () => clearTimeout(debounceRef.current);
   }, [pickup, dropoff, serviceType, serviceDetail, recalcFare]);
 
-  // ── Geolocation ───────────────────────────────────────────────────────────
-
+  // Geolocation
   const handleUseLocation = () => {
     if (!navigator.geolocation) {
-      setLocError("Geolocation is not supported by your browser.");
+      setLocError("Geolocation not supported.");
       return;
     }
     setLocating(true);
@@ -260,9 +483,7 @@ export const Booking: React.FC = () => {
             coords: { lat, lng },
           });
         } catch {
-          setLocError(
-            "Could not determine your address. Please type it manually.",
-          );
+          setLocError("Could not read your address. Please type it manually.");
         } finally {
           setLocating(false);
         }
@@ -272,39 +493,49 @@ export const Booking: React.FC = () => {
         setLocError(
           err.code === 1
             ? "Location permission denied. Please allow access or type your address."
-            : "Could not get your location. Please try again.",
+            : "Location unavailable. Please try again.",
         );
       },
       { timeout: 10000, maximumAge: 30000 },
     );
   };
 
-  // ── Submit ────────────────────────────────────────────────────────────────
+  // Validation
+  const validate = (): string | null => {
+    if (serviceType === "Distance" && !pickup)
+      return "Please select a pickup location.";
+    if (serviceType === "Distance" && !dropoff)
+      return "Please select a drop-off location.";
+    if (!scheduledDate || !scheduledTime)
+      return "Please select a date and time.";
+    if (timeCls === "blocked")
+      return `Bookings need at least ${policy?.minAdvanceMins ?? 40} minutes' notice. Please pick a later time.`;
+    if (!fareResult) return "Please wait while fare is being calculated.";
+    return null;
+  };
 
+  // Submit
   const handleBook = async () => {
-    if (!user) return;
-    if (serviceType === "Distance" && (!pickup || !dropoff)) {
-      setBookingErr("Please enter both pickup and drop-off locations.");
+    const err = validate();
+    if (err) {
+      setBookingErr(err);
       return;
     }
-    if (!scheduledDate || !scheduledTime) {
-      setBookingErr("Please select a date and time.");
-      return;
-    }
-    if (!fareResult) {
-      setBookingErr("Fare has not been calculated yet. Please wait.");
-      return;
-    }
+    if (!policy) return;
 
     setIsBooking(true);
     setBookingErr(null);
 
+    const bookingType = toBookingType(timeCls);
+    const finalFare =
+      bookingType === "immediate" ? policy.immediateBaseFare : fareResult!.fare;
+
     try {
       const payload: CreateBookingPayload = {
         pickupLocation: pickup?.address ?? "N/A",
-        pickupCoords: pickup?.coords ?? { lat: 0, lng: 0 },
+        pickupCoords: pickup?.coords ?? { lat: 6.9271, lng: 79.8612 },
         dropLocation: dropoff?.address ?? "N/A",
-        dropCoords: dropoff?.coords ?? { lat: 0, lng: 0 },
+        dropCoords: dropoff?.coords ?? { lat: 6.9271, lng: 79.8612 },
         serviceType,
         serviceDetail: serviceType !== "Distance" ? serviceDetail : undefined,
         scheduledDate,
@@ -313,62 +544,63 @@ export const Booking: React.FC = () => {
 
       const booking = await createBooking(
         payload,
-        fareResult.fare,
-        fareResult.distanceKm,
-        fareResult.durationMins,
-        fareResult.fareRuleId,
+        finalFare,
+        fareResult!.distanceKm,
+        fareResult!.durationMins,
+        fareResult!.fareRuleId,
+        bookingType,
+        fareResult!.durationMins,
       );
 
       navigate("/booking-success", {
-        state: {
-          booking,
-          userPhone: user.phone,
-          fareRuleName: fareResult.fareRuleName,
-        },
+        state: { booking, userPhone: user?.phone, bookingType, policy },
       });
-    } catch (err: unknown) {
+    } catch (e: unknown) {
       setBookingErr(
-        (err as Error).message ?? "Booking failed. Please try again.",
+        (e as Error).message ?? "Booking failed. Please try again.",
       );
     } finally {
       setIsBooking(false);
     }
   };
 
-  const durationOptions =
-    serviceType === "Hourly" ? HOURLY_OPTIONS : FULLDAY_OPTIONS;
-
-  // Today's date in YYYY-MM-DD (local time — fixes the UTC off-by-one bug)
   const todayLocal = new Date().toLocaleDateString("en-CA");
-
-  // ── Render ────────────────────────────────────────────────────────────────
+  const isBlocked = timeCls === "blocked";
+  const canSubmit =
+    !isBlocked &&
+    !calculating &&
+    !!fareResult &&
+    !!scheduledDate &&
+    !!scheduledTime;
+  const durationOpts = serviceType === "Hourly" ? HOURLY_OPTS : FULLDAY_OPTS;
 
   return (
-    <div className="min-h-[calc(100vh-80px)] py-12 px-4">
-      <div className="max-w-2xl mx-auto space-y-6">
+    <div className="min-h-[calc(100vh-80px)] py-10 px-4">
+      <div className="max-w-xl mx-auto space-y-5">
+        {/* Header */}
         <div>
-          <h1 className="text-3xl font-bold text-white mb-1">Book a Driver</h1>
-          <p className="text-text-sub">
-            Hi {user?.name.split(" ")[0]}! Fill in your booking details below.
+          <h1 className="text-3xl font-bold text-white">Book a Driver</h1>
+          <p className="text-text-sub text-sm mt-1">
+            Hi {user?.name.split(" ")[0]}! Let's get your ride sorted.
           </p>
         </div>
 
-        {/* Service type */}
-        <div className="grid grid-cols-3 gap-3">
-          {SERVICE_TYPES.map(({ type, label }) => (
+        {/* Service type selector */}
+        <div className="grid grid-cols-3 gap-2">
+          {SERVICE_TYPES.map(({ type, label, icon }) => (
             <button
               key={type}
               onClick={() => {
                 setServiceType(type);
                 setFareResult(null);
               }}
-              className={`flex flex-col items-center gap-2 py-4 px-3 rounded-xl border transition-all ${
+              className={`flex flex-col items-center gap-1.5 py-3.5 px-2 rounded-xl border transition-all ${
                 serviceType === type
                   ? "border-brand-red bg-brand-red/10 text-white"
                   : "border-white/10 text-text-sub hover:border-white/20 hover:text-white"
               }`}
             >
-              <Car className="w-5 h-5" />
+              {icon}
               <span className="text-xs font-medium">{label}</span>
             </button>
           ))}
@@ -376,7 +608,7 @@ export const Booking: React.FC = () => {
 
         <GlassCard glowColor="red">
           <div className="space-y-5">
-            {/* Distance: pickup + dropoff */}
+            {/* Distance — pickup + dropoff */}
             {serviceType === "Distance" && (
               <>
                 <div>
@@ -385,19 +617,18 @@ export const Booking: React.FC = () => {
                   </label>
                   <div className="flex gap-2">
                     <div className="flex-1">
-                      {/* FIX: prop is `onChange`, not `onSelect` */}
                       <LocationInput
-                        placeholder="Enter pickup address"
+                        placeholder="Where are you?"
                         value={pickup?.address ?? ""}
-                        onChange={(place) => setPickup(place)}
+                        onChange={setPickup}
                         icon={<MapPin className="h-5 w-5 text-brand-red" />}
                       />
                     </div>
                     <button
                       onClick={handleUseLocation}
                       disabled={locating}
-                      className="px-3 py-3 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 text-text-sub hover:text-white transition-all disabled:opacity-50 flex-shrink-0"
-                      title="Use my current location"
+                      className="px-3 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 text-text-sub hover:text-white transition-all disabled:opacity-50"
+                      title="Use current location"
                     >
                       {locating ? (
                         <Loader2 className="w-5 h-5 animate-spin" />
@@ -419,18 +650,17 @@ export const Booking: React.FC = () => {
                   <label className="block text-xs text-text-sub uppercase tracking-wide mb-2">
                     Drop-off Location
                   </label>
-                  {/* FIX: prop is `onChange`, not `onSelect` */}
                   <LocationInput
-                    placeholder="Enter destination"
+                    placeholder="Where to?"
                     value={dropoff?.address ?? ""}
-                    onChange={(place) => setDropoff(place)}
+                    onChange={setDropoff}
                     icon={<Navigation className="h-5 w-5 text-text-sub" />}
                   />
                 </div>
               </>
             )}
 
-            {/* Duration picker for Hourly / Full Day */}
+            {/* Hourly/Full Day — duration + start location */}
             {serviceType !== "Distance" && (
               <>
                 <div>
@@ -438,7 +668,7 @@ export const Booking: React.FC = () => {
                     Duration
                   </label>
                   <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
-                    {durationOptions.map((opt) => (
+                    {durationOpts.map((opt) => (
                       <button
                         key={opt}
                         onClick={() => setServiceDetail(opt)}
@@ -453,63 +683,64 @@ export const Booking: React.FC = () => {
                     ))}
                   </div>
                 </div>
-
                 <div>
                   <label className="block text-xs text-text-sub uppercase tracking-wide mb-2">
                     Starting Location
                   </label>
-                  {/* FIX: prop is `onChange`, not `onSelect` */}
                   <LocationInput
                     placeholder="Where should the driver meet you?"
                     value={pickup?.address ?? ""}
-                    onChange={(place) => setPickup(place)}
+                    onChange={setPickup}
                     icon={<MapPin className="h-5 w-5 text-brand-red" />}
                   />
                 </div>
               </>
             )}
 
-            {/* Date + time */}
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs text-text-sub uppercase tracking-wide mb-2">
-                  Date
-                </label>
-                {/* FIX: prop is `minDate`, not `min` */}
-                <CustomDatePicker
-                  value={scheduledDate}
-                  onChange={setScheduledDate}
-                  minDate={todayLocal}
-                />
-              </div>
-              <div>
-                <label className="block text-xs text-text-sub uppercase tracking-wide mb-2">
-                  Time
-                </label>
-                <CustomTimePicker
-                  value={scheduledTime}
-                  onChange={setScheduledTime}
-                />
-              </div>
-            </div>
+            {/* ── Date & Time ── */}
+            <DateTimeSelector
+              scheduledDate={scheduledDate}
+              scheduledTime={scheduledTime}
+              onDateChange={setScheduledDate}
+              onTimeChange={setScheduledTime}
+              todayLocal={todayLocal}
+            />
+
+            {/* Time classification banner */}
+            <AnimatePresence mode="wait">
+              {policy &&
+                scheduledDate &&
+                scheduledTime &&
+                timeCls !== "standard" && (
+                  <TimeBanner
+                    key={timeCls}
+                    cls={timeCls}
+                    policy={policy}
+                    minsAway={minsAway}
+                  />
+                )}
+            </AnimatePresence>
 
             {/* Booking error */}
             {bookingErr && (
-              <div className="flex items-center gap-2 text-sm text-red-400 bg-red-400/10 border border-red-400/20 rounded-xl px-4 py-3">
-                <AlertCircle className="w-4 h-4 flex-shrink-0" />
-                {bookingErr}
-              </div>
+              <motion.div
+                initial={{ opacity: 0, y: -4 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="flex items-center gap-2 text-sm text-red-400 bg-red-400/10 border border-red-400/20 rounded-xl px-4 py-3"
+              >
+                <AlertCircle className="w-4 h-4 flex-shrink-0" /> {bookingErr}
+              </motion.div>
             )}
 
             {/* Fare card */}
             <AnimatePresence mode="wait">
               {calculating && (
                 <motion.div
-                  key="calculating"
+                  key="calc"
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
                   exit={{ opacity: 0 }}
-                  className="flex items-center gap-3 text-sm text-text-sub py-4"
+                  className="flex items-center gap-3 text-sm text-text-sub py-3"
                 >
                   <Loader2 className="w-4 h-4 animate-spin text-brand-red" />
                   Calculating fare…
@@ -517,40 +748,67 @@ export const Booking: React.FC = () => {
               )}
               {fareError && !calculating && (
                 <motion.div
-                  key="fareError"
+                  key="ferr"
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
                   exit={{ opacity: 0 }}
                   className="flex items-center gap-2 text-sm text-yellow-400 bg-yellow-400/10 border border-yellow-400/20 rounded-xl px-4 py-3"
                 >
-                  <AlertCircle className="w-4 h-4 flex-shrink-0" />
-                  {fareError}
+                  <Info className="w-4 h-4 flex-shrink-0" /> {fareError}
                 </motion.div>
               )}
-              {fareResult && !calculating && (
-                <FareCard
+              {fareResult && !calculating && policy && (
+                <motion.div
                   key="fare"
-                  fare={fareResult}
-                  serviceType={serviceType}
-                />
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                >
+                  <FareCard
+                    fare={fareResult}
+                    serviceType={serviceType}
+                    cls={timeCls}
+                    policy={policy}
+                  />
+                </motion.div>
               )}
             </AnimatePresence>
 
-            {/* Book button */}
+            {/* F4 — Waiting policy */}
+            {policy && fareResult && !calculating && (
+              <motion.div
+                initial={{ opacity: 0, y: 4 }}
+                animate={{ opacity: 1, y: 0 }}
+              >
+                <WaitingPolicy policy={policy} />
+              </motion.div>
+            )}
+
+            {/* Submit */}
             <NeonButton
-              variant="primary"
+              variant={timeCls === "immediate" ? "secondary" : "primary"}
               fullWidth
               onClick={handleBook}
-              disabled={isBooking || calculating || !fareResult}
+              disabled={!canSubmit || isBooking}
             >
               {isBooking ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin mr-2" /> Booking…
                 </>
+              ) : timeCls === "immediate" ? (
+                <>
+                  <Zap className="w-4 h-4 mr-2" /> Confirm Immediate Booking
+                </>
               ) : (
                 "Confirm Booking"
               )}
             </NeonButton>
+
+            {isBlocked && policy && (
+              <p className="text-xs text-red-400/80 text-center">
+                Select a time at least {policy.minAdvanceMins} minutes from now
+                to continue.
+              </p>
+            )}
           </div>
         </GlassCard>
       </div>
