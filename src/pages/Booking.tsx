@@ -14,7 +14,6 @@ import {
   MapPin,
   Navigation,
   Clock,
-  Car,
   AlertCircle,
   Loader2,
   Locate,
