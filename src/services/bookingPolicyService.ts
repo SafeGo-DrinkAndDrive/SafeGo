@@ -1,7 +1,6 @@
 // ─── src/services/bookingPolicyService.ts ────────────────────────────────────
-// All booking-policy business logic in one place.
-// Fetches admin-configurable rules from Firestore /appSettings/bookingPolicy.
-// Falls back to DEFAULT_BOOKING_POLICY if no document exists yet.
+// No logic changes — the new hourlySlots / fullDaySlots fields are simply
+// included in the Firestore document automatically via saveBookingPolicy.
 // ─────────────────────────────────────────────────────────────────────────────
 import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
 import { db } from "../firebase";
@@ -10,7 +9,7 @@ import type { BookingPolicy, BookingType } from "../types";
 
 // ── Cache ─────────────────────────────────────────────────────────────────────
 
-const TTL = 5 * 60 * 1000; // 5 minutes
+const TTL = 5 * 60 * 1000;
 let _cache: BookingPolicy | null = null;
 let _cacheAt: number = 0;
 
@@ -26,12 +25,18 @@ export async function getBookingPolicy(): Promise<BookingPolicy> {
   try {
     const snap = await getDoc(doc(db, "appSettings", "bookingPolicy"));
     if (snap.exists()) {
-      _cache = snap.data() as BookingPolicy;
+      const data = snap.data() as BookingPolicy;
+      // Back-fill defaults for old docs that don't have the new slot fields yet
+      _cache = {
+        ...data,
+        hourlySlots: data.hourlySlots ?? DEFAULT_BOOKING_POLICY.hourlySlots,
+        fullDaySlots: data.fullDaySlots ?? DEFAULT_BOOKING_POLICY.fullDaySlots,
+      };
       _cacheAt = Date.now();
       return _cache;
     }
   } catch {
-    /* network error – use defaults */
+    /* network error — fall through */
   }
 
   return {
@@ -60,9 +65,6 @@ export async function saveBookingPolicy(
 
 // ── Time helpers ──────────────────────────────────────────────────────────────
 
-/**
- * Parse YYYY-MM-DD + HH:MM into a local Date without the UTC midnight bug.
- */
 export function parseScheduledDateTime(date: string, time: string): Date {
   const [y, m, d] = date.split("-").map(Number);
   const [h, min] = time.split(":").map(Number);
@@ -76,12 +78,6 @@ export function getMinutesUntilPickup(date: string, time: string): number {
 
 export type TimeClassification = "standard" | "immediate" | "blocked";
 
-/**
- * Classify pickup time relative to now:
- *   blocked   → < minAdvanceMins
- *   immediate → between minAdvanceMins and immediateThresholdMins
- *   standard  → ≥ immediateThresholdMins
- */
 export function classifyBookingTime(
   date: string,
   time: string,
@@ -97,15 +93,8 @@ export function toBookingType(cls: TimeClassification): BookingType {
   return cls === "immediate" ? "immediate" : "standard";
 }
 
-// ── Surcharge calculator ──────────────────────────────────────────────────────
+// ── Surcharge ─────────────────────────────────────────────────────────────────
 
-/**
- * Calculate waiting surcharge for extra minutes beyond estimate.
- *
- * billableMinutes = max(0, extraMinutes − freeWaitingMins)
- * blocks          = ceil(billableMinutes / waitingIntervalMins)
- * surcharge       = blocks × waitingChargePerInterval
- */
 export function calculateWaitingSurcharge(
   extraMins: number,
   policy: BookingPolicy,

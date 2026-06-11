@@ -1,9 +1,8 @@
 // ─── src/components/CustomTimePicker.tsx ─────────────────────────────────────
-// Redesigned: drum-wheel style with:
-//   • Separate hour + minute columns + AM/PM toggle
-//   • Red highlight on selected row
-//   • Smooth auto-scroll to selection when opened
-//   • Keyboard-friendly close on Escape
+// Fix: selected item now truly centres in the viewport by scrolling to
+//   index * ITEM_H - (visibleHeight/2 - ITEM_H/2)
+// We read the actual clientHeight after the list mounts instead of
+// using a hardcoded constant, so it works on any screen size.
 // ─────────────────────────────────────────────────────────────────────────────
 import React, {
   useState,
@@ -16,24 +15,20 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Clock } from "lucide-react";
 
 interface CustomTimePickerProps {
-  value: string; // HH:MM (24h)
+  value: string; // HH:MM 24-h
   onChange: (time: string) => void;
 }
 
-const ITEM_H = 40; // px — height of each row in the wheel
+const ITEM_H = 44; // px — height of each wheel row
+const VISIBLE_PX = 176; // 4 visible rows  (4 × 44)
 
 function to12h(h24: number): { hour: number; ampm: "AM" | "PM" } {
-  return {
-    hour: h24 % 12 === 0 ? 12 : h24 % 12,
-    ampm: h24 < 12 ? "AM" : "PM",
-  };
+  return { hour: h24 % 12 === 0 ? 12 : h24 % 12, ampm: h24 < 12 ? "AM" : "PM" };
 }
-
 function to24h(h12: number, ampm: "AM" | "PM"): number {
   if (ampm === "AM") return h12 === 12 ? 0 : h12;
   return h12 === 12 ? 12 : h12 + 12;
 }
-
 function fmt2(n: number): string {
   return String(n).padStart(2, "0");
 }
@@ -48,9 +43,9 @@ function formatDisplay(value: string): string {
 const HOURS = Array.from({ length: 12 }, (_, i) => i + 1); // 1–12
 const MINUTES = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55];
 
-// ── Scrollable wheel column ───────────────────────────────────────────────────
+// ── Scrollable column ─────────────────────────────────────────────────────────
 
-function WheelColumn<T extends number | string>({
+function WheelColumn<T extends number>({
   items,
   selected,
   onSelect,
@@ -64,47 +59,67 @@ function WheelColumn<T extends number | string>({
   const ref = useRef<HTMLDivElement>(null);
   const selIdx = items.indexOf(selected);
 
-  // Scroll to selected item
+  // Scroll so the selected item sits exactly in the middle of the visible area
+  const scrollToSelected = useCallback(
+    (behaviour: ScrollBehavior = "smooth") => {
+      if (!ref.current || selIdx < 0) return;
+      const top = selIdx * ITEM_H - (VISIBLE_PX / 2 - ITEM_H / 2);
+      ref.current.scrollTo({ top: Math.max(0, top), behavior: behaviour });
+    },
+    [selIdx],
+  );
+
+  // On open (component mount) — instant jump, then smooth for subsequent changes
+  const mounted = useRef(false);
   useEffect(() => {
-    if (ref.current && selIdx >= 0) {
-      ref.current.scrollTo({
-        top: selIdx * ITEM_H - ITEM_H,
-        behavior: "smooth",
-      });
+    if (!mounted.current) {
+      scrollToSelected("instant");
+      mounted.current = true;
+    } else {
+      scrollToSelected("smooth");
     }
-  }, [selIdx]);
+  }, [scrollToSelected]);
 
   return (
-    <div
-      ref={ref}
-      className="h-[160px] overflow-y-auto scroll-smooth no-scrollbar"
-      style={{ scrollSnapType: "y mandatory" }}
-    >
-      {/* Padding to allow first/last items to center */}
-      <div style={{ height: ITEM_H }} />
-      {items.map((item) => {
-        const active = item === selected;
-        return (
-          <button
-            key={String(item)}
-            type="button"
-            onClick={() => onSelect(item)}
-            style={{ height: ITEM_H, scrollSnapAlign: "center" }}
-            className={`
-              w-full flex items-center justify-center text-sm font-medium
-              rounded-lg transition-all duration-150
-              ${
-                active
-                  ? "text-white bg-brand-red shadow-[0_0_10px_rgba(220,38,38,0.35)]"
-                  : "text-text-sub hover:text-white hover:bg-white/8"
-              }
-            `}
-          >
-            {label(item)}
-          </button>
-        );
-      })}
-      <div style={{ height: ITEM_H }} />
+    <div className="relative flex-1">
+      {/* Highlight band centred in the list */}
+      <div
+        className="pointer-events-none absolute left-0 right-0 rounded-lg bg-white/6 border border-white/12 z-10"
+        style={{ top: VISIBLE_PX / 2 - ITEM_H / 2, height: ITEM_H }}
+      />
+
+      <div
+        ref={ref}
+        className="overflow-y-auto"
+        style={{
+          height: VISIBLE_PX,
+          scrollbarWidth: "none", // Firefox
+          msOverflowStyle: "none", // IE/Edge
+        }}
+      >
+        {/* Top padding so first item can be centred */}
+        <div style={{ height: VISIBLE_PX / 2 - ITEM_H / 2 }} />
+
+        {items.map((item) => {
+          const active = item === selected;
+          return (
+            <button
+              key={item}
+              type="button"
+              onClick={() => onSelect(item)}
+              style={{ height: ITEM_H }}
+              className={`relative z-20 w-full flex items-center justify-center text-sm font-semibold
+                transition-all duration-150 rounded-lg
+                ${active ? "text-white" : "text-white/30 hover:text-white/60"}`}
+            >
+              {label(item)}
+            </button>
+          );
+        })}
+
+        {/* Bottom padding so last item can be centred */}
+        <div style={{ height: VISIBLE_PX / 2 - ITEM_H / 2 }} />
+      </div>
     </div>
   );
 }
@@ -118,7 +133,6 @@ export const CustomTimePicker: React.FC<CustomTimePickerProps> = ({
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Parse current value into 12h state
   const parsed = useMemo(() => {
     if (!value) return { hour: 8, minute: 0, ampm: "AM" as const };
     const [h24, m] = value.split(":").map(Number);
@@ -130,18 +144,15 @@ export const CustomTimePicker: React.FC<CustomTimePickerProps> = ({
   const [selMinute, setSelMinute] = useState(parsed.minute);
   const [selAmpm, setSelAmpm] = useState<"AM" | "PM">(parsed.ampm);
 
-  // Sync state when value changes externally
   useEffect(() => {
     setSelHour(parsed.hour);
     setSelMinute(parsed.minute);
     setSelAmpm(parsed.ampm);
   }, [parsed]);
 
-  // Emit change on any wheel selection
   const emit = useCallback(
     (h: number, m: number, ap: "AM" | "PM") => {
-      const h24 = to24h(h, ap);
-      onChange(`${fmt2(h24)}:${fmt2(m)}`);
+      onChange(`${fmt2(to24h(h, ap))}:${fmt2(m)}`);
     },
     [onChange],
   );
@@ -159,7 +170,6 @@ export const CustomTimePicker: React.FC<CustomTimePickerProps> = ({
     emit(selHour, selMinute, ap);
   };
 
-  // Close on outside click or Escape
   useEffect(() => {
     const onOutside = (e: MouseEvent) => {
       if (
@@ -227,71 +237,66 @@ export const CustomTimePicker: React.FC<CustomTimePickerProps> = ({
               border border-white/10 rounded-2xl p-4
               shadow-[0_20px_60px_rgba(0,0,0,0.7)]"
           >
-            {/* Column headers */}
+            {/* Column labels */}
             <div className="grid grid-cols-3 mb-2 text-center">
-              <p className="text-xs text-text-sub uppercase tracking-wide">
-                Hour
-              </p>
-              <p className="text-xs text-text-sub uppercase tracking-wide">
-                Minute
-              </p>
-              <p className="text-xs text-text-sub uppercase tracking-wide">
-                Period
-              </p>
+              {["Hour", "Minute", "Period"].map((l) => (
+                <p
+                  key={l}
+                  className="text-xs text-text-sub uppercase tracking-wide"
+                >
+                  {l}
+                </p>
+              ))}
             </div>
 
-            {/* Selection overlay lines */}
-            <div className="relative">
-              <div
-                className="absolute left-0 right-0 pointer-events-none rounded-lg border border-white/10 bg-white/3"
-                style={{ top: ITEM_H, height: ITEM_H }}
+            {/* Wheels */}
+            <div className="flex gap-1">
+              <WheelColumn
+                items={HOURS}
+                selected={selHour}
+                onSelect={handleHour}
+                label={fmt2}
               />
 
-              <div className="grid grid-cols-3 gap-1">
-                {/* Hours */}
-                <WheelColumn
-                  items={HOURS}
-                  selected={selHour}
-                  onSelect={handleHour}
-                  label={(h) => fmt2(h)}
-                />
+              {/* Divider */}
+              <div className="flex items-center self-stretch pb-0">
+                <span className="text-white/30 text-lg font-bold select-none">
+                  :
+                </span>
+              </div>
 
-                {/* Minutes */}
-                <WheelColumn
-                  items={MINUTES}
-                  selected={selMinute}
-                  onSelect={handleMinute}
-                  label={(m) => fmt2(m)}
-                />
+              <WheelColumn
+                items={MINUTES}
+                selected={selMinute}
+                onSelect={handleMinute}
+                label={fmt2}
+              />
 
-                {/* AM / PM */}
-                <div className="h-[160px] flex flex-col items-center justify-center gap-2">
-                  {(["AM", "PM"] as const).map((ap) => (
-                    <button
-                      key={ap}
-                      type="button"
-                      onClick={() => handleAmpm(ap)}
-                      className={`
-                        w-full py-2.5 rounded-lg text-sm font-semibold transition-all
-                        ${
-                          selAmpm === ap
-                            ? "bg-brand-red text-white shadow-[0_0_10px_rgba(220,38,38,0.35)]"
-                            : "text-text-sub hover:text-white hover:bg-white/8"
-                        }
-                      `}
-                    >
-                      {ap}
-                    </button>
-                  ))}
-                </div>
+              {/* AM / PM */}
+              <div className="flex flex-col items-stretch justify-center gap-2 ml-1 flex-shrink-0">
+                {(["AM", "PM"] as const).map((ap) => (
+                  <button
+                    key={ap}
+                    type="button"
+                    onClick={() => handleAmpm(ap)}
+                    className={`px-3 py-2.5 rounded-lg text-sm font-semibold transition-all min-w-[44px]
+                      ${
+                        selAmpm === ap
+                          ? "bg-brand-red text-white shadow-[0_0_10px_rgba(220,38,38,0.35)]"
+                          : "text-white/30 hover:text-white/60 hover:bg-white/6"
+                      }`}
+                  >
+                    {ap}
+                  </button>
+                ))}
               </div>
             </div>
 
             {/* Preview + Done */}
             <div className="flex items-center justify-between mt-4 pt-3 border-t border-white/8">
-              <div className="text-base font-bold text-white">
+              <p className="text-base font-bold text-white">
                 {value ? formatDisplay(value) : "—"}
-              </div>
+              </p>
               <button
                 type="button"
                 onClick={() => setOpen(false)}

@@ -1,6 +1,9 @@
 // ─── src/components/admin/AdminBookingSettings.tsx ───────────────────────────
-// Admin panel for configuring booking policy values stored in Firestore.
-// All values here flow into the booking page and fare logic at runtime.
+// New in this version:
+//   • Hourly package slots — admin picks which durations show in booking UI
+//     Must choose from valid options: 1h–8h
+//   • Full Day package slots — admin picks from 6h, 12h, 24h, 48h
+//   • All existing policy fields unchanged
 // ─────────────────────────────────────────────────────────────────────────────
 import React, { useEffect, useState } from "react";
 import { motion } from "framer-motion";
@@ -15,6 +18,7 @@ import {
   Loader2,
   RotateCcw,
   Info,
+  Package,
 } from "lucide-react";
 import {
   getBookingPolicy,
@@ -27,7 +31,12 @@ import { NeonButton } from "../NeonButton";
 import { DEFAULT_BOOKING_POLICY } from "../../types";
 import type { BookingPolicy } from "../../types";
 
-// ── Reusable field ────────────────────────────────────────────────────────────
+// ── All possible slots ────────────────────────────────────────────────────────
+
+const ALL_HOURLY_OPTIONS = ["1h", "2h", "3h", "4h", "5h", "6h", "8h"];
+const ALL_FULLDAY_OPTIONS = ["6h", "12h", "24h", "48h"];
+
+// ── Reusable numeric field ────────────────────────────────────────────────────
 
 const Field: React.FC<{
   label: string;
@@ -63,6 +72,50 @@ const Field: React.FC<{
   </div>
 );
 
+// ── Slot toggle grid ──────────────────────────────────────────────────────────
+
+const SlotToggle: React.FC<{
+  allOptions: string[];
+  selected: string[];
+  onChange: (slots: string[]) => void;
+  minSelect?: number;
+}> = ({ allOptions, selected, onChange, minSelect = 1 }) => {
+  const toggle = (slot: string) => {
+    if (selected.includes(slot)) {
+      if (selected.length <= minSelect) return; // enforce minimum
+      onChange(selected.filter((s) => s !== slot));
+    } else {
+      // Keep sorted in natural hour order
+      const next = [...selected, slot].sort(
+        (a, b) => parseInt(a) - parseInt(b),
+      );
+      onChange(next);
+    }
+  };
+
+  return (
+    <div className="flex flex-wrap gap-2">
+      {allOptions.map((slot) => {
+        const active = selected.includes(slot);
+        return (
+          <button
+            key={slot}
+            type="button"
+            onClick={() => toggle(slot)}
+            className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-all ${
+              active
+                ? "bg-brand-red/20 border-brand-red text-brand-red"
+                : "bg-white/5 border-white/10 text-text-sub hover:bg-white/10 hover:text-white"
+            }`}
+          >
+            {slot}
+          </button>
+        );
+      })}
+    </div>
+  );
+};
+
 // ── Live preview ──────────────────────────────────────────────────────────────
 
 const PolicyPreview: React.FC<{
@@ -71,33 +124,31 @@ const PolicyPreview: React.FC<{
   const scenarios = [
     {
       label: "Blocked",
-      desc: `Pickup < ${p.minAdvanceMins} min away`,
+      desc: `< ${p.minAdvanceMins} min away`,
       color: "text-red-400 bg-red-400/10 border-red-400/20",
     },
     {
       label: "Immediate",
-      desc: `Pickup ${p.minAdvanceMins}–${p.immediateThresholdMins} min away → LKR ${p.immediateBaseFare.toLocaleString()} flat`,
+      desc: `${p.minAdvanceMins}–${p.immediateThresholdMins} min → LKR ${p.immediateBaseFare.toLocaleString()} flat`,
       color: "text-amber-400 bg-amber-400/10 border-amber-400/20",
     },
     {
       label: "Standard",
-      desc: `Pickup ≥ ${p.immediateThresholdMins} min away → distance-based fare`,
+      desc: `≥ ${p.immediateThresholdMins} min → distance-based fare`,
       color: "text-green-400 bg-green-400/10 border-green-400/20",
     },
   ];
 
   // Surcharge example: 50 min extra
-  const extra = 50;
-  const billable = Math.max(0, extra - p.freeWaitingMins);
+  const billable = Math.max(0, 50 - p.freeWaitingMins);
   const blocks = Math.ceil(billable / p.waitingIntervalMins);
   const charge = blocks * p.waitingChargePerInterval;
 
   return (
     <div className="space-y-4">
-      {/* Booking window scenarios */}
       <div>
         <p className="text-xs text-text-sub uppercase tracking-wide mb-2">
-          Booking Window Preview
+          Booking Window
         </p>
         <div className="space-y-2">
           {scenarios.map(({ label, desc, color }) => (
@@ -112,18 +163,17 @@ const PolicyPreview: React.FC<{
         </div>
       </div>
 
-      {/* Surcharge example */}
       <div>
         <p className="text-xs text-text-sub uppercase tracking-wide mb-2">
-          Surcharge Example (50 min over estimate)
+          Surcharge (50 min over)
         </p>
         <div className="bg-white/3 border border-white/8 rounded-lg p-3 text-xs space-y-1">
           <div className="flex justify-between text-text-sub">
-            <span>Extra time</span>
+            <span>Extra</span>
             <span>50 min</span>
           </div>
           <div className="flex justify-between text-text-sub">
-            <span>Free grace</span>
+            <span>Free</span>
             <span>−{p.freeWaitingMins} min</span>
           </div>
           <div className="flex justify-between text-text-sub">
@@ -144,11 +194,49 @@ const PolicyPreview: React.FC<{
           </div>
         </div>
       </div>
+
+      <div>
+        <p className="text-xs text-text-sub uppercase tracking-wide mb-2">
+          Package Slots Preview
+        </p>
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-text-sub w-16 flex-shrink-0">
+              Hourly
+            </span>
+            <div className="flex flex-wrap gap-1">
+              {p.hourlySlots.map((s) => (
+                <span
+                  key={s}
+                  className="px-2 py-0.5 bg-brand-red/10 text-brand-red text-xs rounded border border-brand-red/20"
+                >
+                  {s}
+                </span>
+              ))}
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-text-sub w-16 flex-shrink-0">
+              Full Day
+            </span>
+            <div className="flex flex-wrap gap-1">
+              {p.fullDaySlots.map((s) => (
+                <span
+                  key={s}
+                  className="px-2 py-0.5 bg-blue-400/10 text-blue-400 text-xs rounded border border-blue-400/20"
+                >
+                  {s}
+                </span>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 };
 
-// ── Main component ────────────────────────────────────────────────────────────
+// ── Main ──────────────────────────────────────────────────────────────────────
 
 export const AdminBookingSettings: React.FC = () => {
   const { user } = useAuth();
@@ -157,8 +245,10 @@ export const AdminBookingSettings: React.FC = () => {
   const [saving, setSaving] = useState(false);
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [lastSaved, setLastSaved] = useState<string | null>(null);
+  const [lastSavedBy, setLastSavedBy] = useState<string | null>(null);
 
-  // All values stored as strings to avoid double-zero bug
+  // Numeric fields as strings (avoids double-zero bug)
   const [minAdvance, setMinAdvance] = useState(
     String(DEFAULT_BOOKING_POLICY.minAdvanceMins),
   );
@@ -177,8 +267,14 @@ export const AdminBookingSettings: React.FC = () => {
   const [waitCharge, setWaitCharge] = useState(
     String(DEFAULT_BOOKING_POLICY.waitingChargePerInterval),
   );
-  const [lastUpdated, setLastUpdated] = useState<string | null>(null);
-  const [lastUpdatedBy, setLastUpdatedBy] = useState<string | null>(null);
+
+  // Slot arrays
+  const [hourlySlots, setHourlySlots] = useState<string[]>(
+    DEFAULT_BOOKING_POLICY.hourlySlots,
+  );
+  const [fullDaySlots, setFullDaySlots] = useState<string[]>(
+    DEFAULT_BOOKING_POLICY.fullDaySlots,
+  );
 
   useEffect(() => {
     getBookingPolicy()
@@ -189,8 +285,10 @@ export const AdminBookingSettings: React.FC = () => {
         setFreeWaiting(String(p.freeWaitingMins));
         setWaitInterval(String(p.waitingIntervalMins));
         setWaitCharge(String(p.waitingChargePerInterval));
-        setLastUpdated(p.updatedAt);
-        setLastUpdatedBy(p.updatedBy);
+        setHourlySlots(p.hourlySlots);
+        setFullDaySlots(p.fullDaySlots);
+        setLastSaved(p.updatedAt);
+        setLastSavedBy(p.updatedBy);
       })
       .finally(() => setLoading(false));
   }, []);
@@ -207,6 +305,8 @@ export const AdminBookingSettings: React.FC = () => {
     freeWaitingMins: parse(freeWaiting, 15),
     waitingIntervalMins: parse(waitInterval, 15),
     waitingChargePerInterval: parse(waitCharge, 300),
+    hourlySlots,
+    fullDaySlots,
   };
 
   const handleSave = async () => {
@@ -217,13 +317,23 @@ export const AdminBookingSettings: React.FC = () => {
       );
       return;
     }
+    if (hourlySlots.length === 0) {
+      setError("Select at least one hourly slot.");
+      return;
+    }
+    if (fullDaySlots.length === 0) {
+      setError("Select at least one full-day slot.");
+      return;
+    }
+
     setSaving(true);
     setError(null);
     try {
       await saveBookingPolicy(p, user?.uid ?? "admin");
       clearPolicyCache();
-      setLastUpdated(new Date().toISOString());
-      setLastUpdatedBy(user?.name ?? "admin");
+      const now = new Date().toISOString();
+      setLastSaved(now);
+      setLastSavedBy(user?.name ?? "admin");
       setSuccess(true);
       setTimeout(() => setSuccess(false), 3000);
     } catch (err: unknown) {
@@ -240,6 +350,8 @@ export const AdminBookingSettings: React.FC = () => {
     setFreeWaiting(String(DEFAULT_BOOKING_POLICY.freeWaitingMins));
     setWaitInterval(String(DEFAULT_BOOKING_POLICY.waitingIntervalMins));
     setWaitCharge(String(DEFAULT_BOOKING_POLICY.waitingChargePerInterval));
+    setHourlySlots(DEFAULT_BOOKING_POLICY.hourlySlots);
+    setFullDaySlots(DEFAULT_BOOKING_POLICY.fullDaySlots);
   };
 
   if (loading) {
@@ -260,19 +372,19 @@ export const AdminBookingSettings: React.FC = () => {
             Booking Settings
           </h2>
           <p className="text-sm text-text-sub mt-0.5">
-            Control booking time rules, immediate pricing, and waiting
-            surcharges. Changes take effect immediately — no code deploy needed.
+            All booking rules, pricing, and package slots. Changes take effect
+            immediately — no code deploy needed.
           </p>
         </div>
-        {lastUpdated && lastUpdatedBy && (
+        {lastSaved && (
           <p className="text-xs text-text-sub text-right flex-shrink-0">
             Last saved
             <br />
             <span className="text-white">
-              {new Date(lastUpdated).toLocaleDateString("en-LK")}
+              {new Date(lastSaved).toLocaleDateString("en-LK")}
             </span>
             <br />
-            by {lastUpdatedBy === "system" ? "system default" : lastUpdatedBy}
+            by {lastSavedBy === "system" ? "system default" : lastSavedBy}
           </p>
         )}
       </div>
@@ -282,11 +394,10 @@ export const AdminBookingSettings: React.FC = () => {
         <motion.div
           initial={{ opacity: 0, y: -8 }}
           animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0 }}
           className="flex items-center gap-2 text-sm text-green-400 bg-green-400/10 border border-green-400/20 rounded-xl px-4 py-3"
         >
-          <CheckCircle className="w-4 h-4" /> Settings saved — live immediately
-          for all new bookings.
+          <CheckCircle className="w-4 h-4" /> Settings saved — live for all new
+          bookings.
         </motion.div>
       )}
       {error && (
@@ -302,9 +413,9 @@ export const AdminBookingSettings: React.FC = () => {
       )}
 
       <div className="grid lg:grid-cols-2 gap-6">
-        {/* Left: settings */}
+        {/* ── Left: all config ── */}
         <div className="space-y-4">
-          {/* Booking Time Rules */}
+          {/* Time Rules */}
           <GlassCard>
             <div className="flex items-center gap-2 mb-1">
               <Clock className="w-4 h-4 text-brand-red" />
@@ -312,13 +423,12 @@ export const AdminBookingSettings: React.FC = () => {
                 Booking Time Rules
               </h3>
             </div>
-            <p className="text-xs text-text-sub mb-4">
-              Define when bookings are blocked, classified as immediate, or
-              treated as standard.
+            <p className="text-xs text-text-sub mb-3">
+              Define when bookings are blocked, immediate, or standard.
             </p>
             <Field
-              label="Minimum Advance Booking Time"
-              description="Bookings with pickup closer than this are blocked."
+              label="Minimum Advance Time"
+              description="Bookings closer than this are blocked entirely."
               icon={<AlertCircle className="w-4 h-4 text-red-400" />}
               unit="min"
               value={minAdvance}
@@ -327,7 +437,7 @@ export const AdminBookingSettings: React.FC = () => {
             />
             <Field
               label="Immediate Booking Threshold"
-              description="Pickup within this many minutes → immediate booking. Must be greater than minimum."
+              description="Pickup within this window → immediate booking rate."
               icon={<Zap className="w-4 h-4 text-amber-400" />}
               unit="min"
               value={immThreshold}
@@ -336,21 +446,20 @@ export const AdminBookingSettings: React.FC = () => {
             />
           </GlassCard>
 
-          {/* Immediate Booking Pricing */}
+          {/* Immediate Pricing */}
           <GlassCard>
             <div className="flex items-center gap-2 mb-1">
               <Zap className="w-4 h-4 text-amber-400" />
               <h3 className="text-sm font-semibold text-white">
-                Immediate Booking Pricing
+                Immediate Booking Rate
               </h3>
             </div>
-            <p className="text-xs text-text-sub mb-4">
-              This flat rate replaces the distance-based fare for immediate
-              bookings.
+            <p className="text-xs text-text-sub mb-3">
+              Replaces distance fare for immediate bookings.
             </p>
             <Field
-              label="Immediate Booking Base Fare"
-              description="Fixed LKR amount charged for all immediate bookings regardless of distance."
+              label="Immediate Base Fare"
+              description="Fixed LKR for all immediate bookings."
               icon={<DollarSign className="w-4 h-4 text-amber-400" />}
               unit="LKR"
               value={immFare}
@@ -359,7 +468,7 @@ export const AdminBookingSettings: React.FC = () => {
             />
           </GlassCard>
 
-          {/* Waiting Surcharge */}
+          {/* Waiting Surcharge — Distance only */}
           <GlassCard>
             <div className="flex items-center gap-2 mb-1">
               <Timer className="w-4 h-4 text-blue-400" />
@@ -367,13 +476,14 @@ export const AdminBookingSettings: React.FC = () => {
                 Waiting Time Surcharge
               </h3>
             </div>
-            <p className="text-xs text-text-sub mb-4">
-              Applied when the actual trip duration exceeds the Google Maps
-              estimate.
+            <p className="text-xs text-text-sub mb-3">
+              Applies to{" "}
+              <span className="text-white font-medium">Distance</span> bookings
+              only when actual trip exceeds estimate.
             </p>
             <Field
-              label="Free Waiting Grace Period"
-              description="Minutes of additional time given for free before surcharges apply."
+              label="Free Grace Period"
+              description="Extra minutes given free before surcharges."
               icon={<Timer className="w-4 h-4 text-green-400" />}
               unit="min"
               value={freeWaiting}
@@ -381,8 +491,8 @@ export const AdminBookingSettings: React.FC = () => {
               min={0}
             />
             <Field
-              label="Waiting Charge Interval"
-              description="Each block of this many minutes is charged after the free period."
+              label="Billing Interval"
+              description="Each block of this many minutes is charged."
               icon={<Timer className="w-4 h-4 text-blue-400" />}
               unit="min"
               value={waitInterval}
@@ -391,7 +501,7 @@ export const AdminBookingSettings: React.FC = () => {
             />
             <Field
               label="Charge per Interval"
-              description="LKR amount charged per waiting block after the free grace period."
+              description="LKR added per block after grace period."
               icon={<DollarSign className="w-4 h-4 text-blue-400" />}
               unit="LKR"
               value={waitCharge}
@@ -400,11 +510,68 @@ export const AdminBookingSettings: React.FC = () => {
             />
           </GlassCard>
 
-          {/* Info note */}
+          {/* Package Slots */}
+          <GlassCard>
+            <div className="flex items-center gap-2 mb-1">
+              <Package className="w-4 h-4 text-purple-400" />
+              <h3 className="text-sm font-semibold text-white">
+                Package Duration Slots
+              </h3>
+            </div>
+            <p className="text-xs text-text-sub mb-4">
+              Choose which duration options appear in the booking page for each
+              service type. The active Fare Rule's{" "}
+              <code className="text-brand-red text-xs">flatRates</code> must
+              include rates for every slot you enable here.
+            </p>
+
+            {/* Hourly slots */}
+            <div className="mb-5">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-xs font-medium text-white">
+                  Hourly Packages
+                </p>
+                <p className="text-xs text-text-sub">
+                  {hourlySlots.length} selected
+                </p>
+              </div>
+              <SlotToggle
+                allOptions={ALL_HOURLY_OPTIONS}
+                selected={hourlySlots}
+                onChange={setHourlySlots}
+                minSelect={1}
+              />
+              <p className="text-xs text-text-sub mt-1.5">
+                Select at least 1. Minimum selectable: 1h, maximum: 8h.
+              </p>
+            </div>
+
+            {/* Full Day slots */}
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-xs font-medium text-white">
+                  Full Day Packages
+                </p>
+                <p className="text-xs text-text-sub">
+                  {fullDaySlots.length} selected
+                </p>
+              </div>
+              <SlotToggle
+                allOptions={ALL_FULLDAY_OPTIONS}
+                selected={fullDaySlots}
+                onChange={setFullDaySlots}
+                minSelect={1}
+              />
+              <p className="text-xs text-text-sub mt-1.5">
+                Select at least 1. Available: 6h, 12h, 24h, 48h.
+              </p>
+            </div>
+          </GlassCard>
+
           <div className="flex items-start gap-2 text-xs text-text-sub p-3 bg-white/3 border border-white/8 rounded-xl">
             <Info className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
-            Changes are cached for 5 minutes on the client. Users may see old
-            values briefly after saving.
+            Changes are cached for 5 minutes client-side. New bookings after
+            that will use the updated settings.
           </div>
 
           {/* Actions */}
@@ -426,17 +593,16 @@ export const AdminBookingSettings: React.FC = () => {
               onClick={handleReset}
               className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl border border-white/10 text-text-sub text-sm hover:bg-white/5 hover:text-white transition-all"
             >
-              <RotateCcw className="w-3.5 h-3.5" /> Reset to defaults
+              <RotateCcw className="w-3.5 h-3.5" /> Reset defaults
             </button>
           </div>
         </div>
 
-        {/* Right: live preview */}
+        {/* ── Right: live preview ── */}
         <div>
           <GlassCard>
             <h3 className="text-sm font-semibold text-white mb-4 flex items-center gap-2">
-              <Info className="w-4 h-4 text-text-sub" />
-              Live Preview
+              <Info className="w-4 h-4 text-text-sub" /> Live Preview
             </h3>
             <PolicyPreview p={currentPolicy} />
           </GlassCard>

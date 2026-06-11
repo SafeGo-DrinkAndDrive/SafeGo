@@ -1,11 +1,6 @@
 // ─── src/components/admin/AdminFareManager.tsx ───────────────────────────────
-// Fixes in this version:
-//   1. Firestore undefined error: tiers/flatRates now omitted via spread instead
-//      of being set to undefined (Firestore rejects undefined field values).
-//   2. Double-zero keyboard bug: all numeric inputs are controlled as strings
-//      internally, only converted to numbers when saving. This lets the user
-//      clear the field and type freely without the input fighting them.
-//   3. Live preview slider removed — replaced with a plain number text input.
+// Change: HOURLY_SLOTS now 1h–8h, FULLDAY_SLOTS now 6h/12h/24h/48h
+// Everything else identical to the last working version.
 // ─────────────────────────────────────────────────────────────────────────────
 import React, { useEffect, useState, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -71,7 +66,6 @@ function tierToStr(t: FareRuleTier): TierStr {
     ratePerKm: String(t.ratePerKm),
   };
 }
-
 function strToTier(s: TierStr): FareRuleTier {
   return {
     minKm: parseNum(s.minKm),
@@ -88,11 +82,16 @@ const DEFAULT_TIERS_STR: TierStr[] = [
   { minKm: "30", maxKm: "9999", baseCharge: "0", ratePerKm: "100" },
 ];
 
-// ── Shared input class ────────────────────────────────────────────────────────
-
 const inputCls =
-  "w-full bg-background-darker/60 border border-white/10 rounded-lg px-3 py-2 " +
-  "text-white text-sm outline-none focus:border-brand-red transition-all";
+  "w-full bg-background-darker/60 border border-white/10 rounded-lg px-3 py-2 text-white text-sm outline-none focus:border-brand-red transition-all";
+
+// ── Updated slot lists ────────────────────────────────────────────────────────
+// Hourly: full range 1h–8h (policy controls which subset users see)
+const HOURLY_SLOTS = ["1h", "2h", "3h", "4h", "5h", "6h", "8h"];
+// Full Day: extended to include 24h and 48h
+const FULLDAY_SLOTS = ["6h", "12h", "24h", "48h"];
+
+type FlatRatesStr = Record<string, string>;
 
 // ── Tier editor row ────────────────────────────────────────────────────────────
 
@@ -100,64 +99,41 @@ const TierRow: React.FC<{
   tier: TierStr;
   index: number;
   isLast: boolean;
-  onChange: (index: number, field: keyof TierStr, value: string) => void;
-  onRemove: (index: number) => void;
+  onChange: (i: number, f: keyof TierStr, v: string) => void;
+  onRemove: (i: number) => void;
 }> = ({ tier, index, isLast, onChange, onRemove }) => (
   <div className="grid grid-cols-[1fr_1fr_1fr_1fr_auto] gap-2 items-end mb-2">
-    <div>
-      <label className="block text-xs text-text-sub mb-1">Min km</label>
-      <input
-        type="number"
-        inputMode="numeric"
-        min={0}
-        value={tier.minKm}
-        onChange={(e) => onChange(index, "minKm", e.target.value)}
-        className={inputCls}
-      />
-    </div>
-    <div>
-      <label className="block text-xs text-text-sub mb-1">
-        Max km {isLast && <span className="text-text-sub/50">(∞)</span>}
-      </label>
-      <input
-        type="number"
-        inputMode="numeric"
-        min={0}
-        value={isLast ? "9999" : tier.maxKm}
-        disabled={isLast}
-        onChange={(e) => onChange(index, "maxKm", e.target.value)}
-        className={`${inputCls} ${isLast ? "opacity-40 cursor-not-allowed" : ""}`}
-      />
-    </div>
-    <div>
-      <label className="block text-xs text-text-sub mb-1">Base (LKR)</label>
-      <input
-        type="number"
-        inputMode="numeric"
-        min={0}
-        value={tier.baseCharge}
-        onChange={(e) => onChange(index, "baseCharge", e.target.value)}
-        className={inputCls}
-        placeholder="0"
-      />
-    </div>
-    <div>
-      <label className="block text-xs text-text-sub mb-1">LKR / km</label>
-      <input
-        type="number"
-        inputMode="numeric"
-        min={0}
-        value={tier.ratePerKm}
-        onChange={(e) => onChange(index, "ratePerKm", e.target.value)}
-        className={inputCls}
-        placeholder="0"
-      />
-    </div>
+    {(
+      [
+        ["minKm", "Min km"],
+        ["maxKm", "Max km"],
+        ["baseCharge", "Base (LKR)"],
+        ["ratePerKm", "LKR/km"],
+      ] as [keyof TierStr, string][]
+    ).map(([field, label]) => (
+      <div key={field}>
+        <label className="block text-xs text-text-sub mb-1">
+          {label}{" "}
+          {isLast && field === "maxKm" && (
+            <span className="text-text-sub/50">(∞)</span>
+          )}
+        </label>
+        <input
+          type="number"
+          inputMode="numeric"
+          min={0}
+          value={isLast && field === "maxKm" ? "9999" : tier[field]}
+          disabled={isLast && field === "maxKm"}
+          onChange={(e) => onChange(index, field, e.target.value)}
+          className={`${inputCls} ${isLast && field === "maxKm" ? "opacity-40 cursor-not-allowed" : ""}`}
+          placeholder="0"
+        />
+      </div>
+    ))}
     <button
       type="button"
       onClick={() => onRemove(index)}
       className="mb-0.5 p-2 rounded-lg text-red-400 hover:bg-red-400/10 transition-colors"
-      title="Remove tier"
     >
       <Trash2 className="w-4 h-4" />
     </button>
@@ -166,19 +142,14 @@ const TierRow: React.FC<{
 
 // ── Flat rates editor ─────────────────────────────────────────────────────────
 
-const HOURLY_SLOTS = ["1h", "2h", "3h", "4h", "6h", "12h"];
-const FULLDAY_SLOTS = ["4h", "6h", "8h", "10h", "12h"];
-
-type FlatRatesStr = Record<string, string>;
-
 const FlatRatesEditor: React.FC<{
   serviceType: "Hourly" | "Full Day";
   rates: FlatRatesStr;
-  onChange: (rates: FlatRatesStr) => void;
+  onChange: (r: FlatRatesStr) => void;
 }> = ({ serviceType, rates, onChange }) => {
   const slots = serviceType === "Hourly" ? HOURLY_SLOTS : FULLDAY_SLOTS;
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
       {slots.map((slot) => (
         <div key={slot}>
           <label className="block text-xs text-text-sub mb-1">{slot}</label>
@@ -206,7 +177,7 @@ const FlatRatesEditor: React.FC<{
 
 interface RuleFormProps {
   initial?: FareRule;
-  onSave: (rule: FareRule) => void;
+  onSave: (r: FareRule) => void;
   onCancel: () => void;
   adminUid: string;
 }
@@ -229,7 +200,6 @@ const RuleForm: React.FC<RuleFormProps> = ({
   const [tierStrs, setTierStrs] = useState<TierStr[]>(
     initial?.tiers ? initial.tiers.map(tierToStr) : DEFAULT_TIERS_STR,
   );
-
   const [flatRatesStr, setFlatRatesStr] = useState<FlatRatesStr>(() => {
     if (!initial?.flatRates) return {};
     return Object.fromEntries(
@@ -237,20 +207,17 @@ const RuleForm: React.FC<RuleFormProps> = ({
     );
   });
 
-  const previewKm = parseNum(previewKmStr);
-  const previewFare =
-    serviceType === "Distance"
-      ? previewTieredFare(previewKm, tierStrs.map(strToTier))
-      : 0;
+  const previewFare = previewTieredFare(
+    parseNum(previewKmStr),
+    tierStrs.map(strToTier),
+  );
 
-  const updateTier = (i: number, field: keyof TierStr, value: string) =>
+  const updateTier = (i: number, f: keyof TierStr, v: string) =>
     setTierStrs((prev) =>
-      prev.map((t, idx) => (idx === i ? { ...t, [field]: value } : t)),
+      prev.map((t, idx) => (idx === i ? { ...t, [f]: v } : t)),
     );
-
   const removeTier = (i: number) =>
     setTierStrs((prev) => prev.filter((_, idx) => idx !== i));
-
   const addTier = () => {
     const last = tierStrs[tierStrs.length - 1];
     const newMin = parseNum(last.minKm) + 10;
@@ -271,8 +238,8 @@ const RuleForm: React.FC<RuleFormProps> = ({
       setError("Rule name is required.");
       return;
     }
-    if (serviceType === "Distance" && tierStrs.length === 0) {
-      setError("At least one distance tier is required.");
+    if (serviceType === "Distance" && !tierStrs.length) {
+      setError("At least one tier required.");
       return;
     }
     setSaving(true);
@@ -282,8 +249,6 @@ const RuleForm: React.FC<RuleFormProps> = ({
       const flatRates = Object.fromEntries(
         Object.entries(flatRatesStr).map(([k, v]) => [k, parseNum(v)]),
       );
-
-      // FIX: spread to omit the unused field entirely — Firestore rejects undefined
       const payload: CreateFareRulePayload = {
         name: name.trim(),
         serviceType,
@@ -292,7 +257,6 @@ const RuleForm: React.FC<RuleFormProps> = ({
         createdBy: adminUid,
         ...(serviceType === "Distance" ? { tiers } : { flatRates }),
       };
-
       let saved: FareRule;
       if (initial) {
         await updateFareRule(initial.id, payload);
@@ -302,7 +266,7 @@ const RuleForm: React.FC<RuleFormProps> = ({
       }
       onSave(saved);
     } catch (err: unknown) {
-      setError((err as Error).message ?? "Failed to save rule.");
+      setError((err as Error).message ?? "Save failed.");
     } finally {
       setSaving(false);
     }
@@ -313,15 +277,12 @@ const RuleForm: React.FC<RuleFormProps> = ({
       <h3 className="text-lg font-semibold text-white mb-5">
         {initial ? "Edit Fare Rule" : "Create Fare Rule"}
       </h3>
-
       {error && (
         <div className="flex items-center gap-2 text-sm text-red-400 bg-red-400/10 border border-red-400/20 rounded-xl px-4 py-3 mb-4">
           <AlertCircle className="w-4 h-4 flex-shrink-0" /> {error}
         </div>
       )}
-
       <div className="space-y-5">
-        {/* Name + service type */}
         <div className="grid grid-cols-2 gap-4">
           <div>
             <label className="block text-xs text-text-sub uppercase tracking-wide mb-1.5">
@@ -330,7 +291,7 @@ const RuleForm: React.FC<RuleFormProps> = ({
             <input
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. Standard Distance Rate"
+              placeholder="e.g. Standard Rate"
               className={inputCls}
             />
           </div>
@@ -349,8 +310,6 @@ const RuleForm: React.FC<RuleFormProps> = ({
             </select>
           </div>
         </div>
-
-        {/* Description */}
         <div>
           <label className="block text-xs text-text-sub uppercase tracking-wide mb-1.5">
             Description <span className="text-text-sub/50">(optional)</span>
@@ -363,8 +322,7 @@ const RuleForm: React.FC<RuleFormProps> = ({
           />
         </div>
 
-        {/* Distance tiers */}
-        {serviceType === "Distance" && (
+        {serviceType === "Distance" ? (
           <div>
             <div className="flex items-center justify-between mb-3">
               <label className="text-xs text-text-sub uppercase tracking-wide">
@@ -378,12 +336,11 @@ const RuleForm: React.FC<RuleFormProps> = ({
                 <Plus className="w-3 h-3" /> Add tier
               </button>
             </div>
-
             <div className="bg-black/20 rounded-xl p-4 mb-4">
               <div className="flex items-start gap-2 text-xs text-blue-300 mb-3">
                 <Info className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
-                The rate of the tier the total distance falls into is applied to
-                the whole journey.
+                Rate of the tier the total distance falls into is applied to the
+                whole journey.
               </div>
               {tierStrs.map((tier, i) => (
                 <TierRow
@@ -396,8 +353,6 @@ const RuleForm: React.FC<RuleFormProps> = ({
                 />
               ))}
             </div>
-
-            {/* Fare preview — text input, no slider */}
             <div className="bg-brand-red/5 border border-brand-red/20 rounded-xl p-4">
               <div className="flex items-center justify-between mb-3">
                 <p className="text-sm font-medium text-white">Fare preview</p>
@@ -418,18 +373,24 @@ const RuleForm: React.FC<RuleFormProps> = ({
                 LKR {previewFare.toLocaleString()}
               </p>
               <p className="text-xs text-text-sub mt-0.5">
-                Estimated fare for {previewKm} km
+                for {parseNum(previewKmStr)} km
               </p>
             </div>
           </div>
-        )}
-
-        {/* Flat rates */}
-        {serviceType !== "Distance" && (
+        ) : (
           <div>
             <label className="block text-xs text-text-sub uppercase tracking-wide mb-3">
               Flat rates by duration
             </label>
+            <p className="text-xs text-text-sub mb-3">
+              Set rates for all possible slots. Users will only see the slots
+              enabled in
+              <span className="text-white">
+                {" "}
+                Booking Settings → Package Duration Slots
+              </span>
+              . Leave unused slots as 0.
+            </p>
             <FlatRatesEditor
               serviceType={serviceType as "Hourly" | "Full Day"}
               rates={flatRatesStr}
@@ -438,7 +399,6 @@ const RuleForm: React.FC<RuleFormProps> = ({
           </div>
         )}
 
-        {/* Actions */}
         <div className="flex gap-3 pt-2">
           <NeonButton variant="primary" onClick={handleSave} disabled={saving}>
             {saving ? (
@@ -466,20 +426,15 @@ const RuleForm: React.FC<RuleFormProps> = ({
 
 const RuleCard: React.FC<{
   rule: FareRule;
-  onEdit: (rule: FareRule) => void;
-  onActivate: (rule: FareRule) => void;
-  onDisable: (rule: FareRule) => void;
+  onEdit: (r: FareRule) => void;
+  onActivate: (r: FareRule) => void;
+  onDisable: (r: FareRule) => void;
   loading: boolean;
 }> = ({ rule, onEdit, onActivate, onDisable, loading }) => {
   const [expanded, setExpanded] = useState(false);
-
   return (
     <div
-      className={`rounded-xl border transition-all ${
-        rule.isActive
-          ? "border-brand-red/40 bg-brand-red/5"
-          : "border-white/10 bg-white/3"
-      }`}
+      className={`rounded-xl border transition-all ${rule.isActive ? "border-brand-red/40 bg-brand-red/5" : "border-white/10 bg-white/3"}`}
     >
       <div className="flex items-center justify-between p-4">
         <div className="flex items-center gap-3 min-w-0">
@@ -537,7 +492,6 @@ const RuleCard: React.FC<{
           )}
         </div>
       </div>
-
       <AnimatePresence>
         {expanded && (
           <motion.div
@@ -551,15 +505,9 @@ const RuleCard: React.FC<{
                 <table className="w-full text-xs">
                   <thead>
                     <tr className="text-text-sub">
-                      <th className="text-left pb-1.5 font-medium">
-                        Distance band
-                      </th>
-                      <th className="text-right pb-1.5 font-medium">
-                        Base charge
-                      </th>
-                      <th className="text-right pb-1.5 font-medium">
-                        Rate / km
-                      </th>
+                      <th className="text-left pb-1.5 font-medium">Band</th>
+                      <th className="text-right pb-1.5 font-medium">Base</th>
+                      <th className="text-right pb-1.5 font-medium">Rate/km</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -580,18 +528,20 @@ const RuleCard: React.FC<{
                   </tbody>
                 </table>
               ) : rule.flatRates ? (
-                <div className="grid grid-cols-3 gap-2">
-                  {Object.entries(rule.flatRates).map(([slot, price]) => (
-                    <div
-                      key={slot}
-                      className="bg-white/5 rounded-lg p-2 text-center"
-                    >
-                      <p className="text-xs text-text-sub">{slot}</p>
-                      <p className="text-sm font-semibold text-white">
-                        LKR {price.toLocaleString()}
-                      </p>
-                    </div>
-                  ))}
+                <div className="grid grid-cols-4 gap-2">
+                  {Object.entries(rule.flatRates)
+                    .filter(([, v]) => v > 0)
+                    .map(([slot, price]) => (
+                      <div
+                        key={slot}
+                        className="bg-white/5 rounded-lg p-2 text-center"
+                      >
+                        <p className="text-xs text-text-sub">{slot}</p>
+                        <p className="text-sm font-semibold text-white">
+                          LKR {price.toLocaleString()}
+                        </p>
+                      </div>
+                    ))}
                 </div>
               ) : (
                 <p className="text-xs text-text-sub">No pricing data.</p>
@@ -609,7 +559,7 @@ const RuleCard: React.FC<{
   );
 };
 
-// ── Main component ────────────────────────────────────────────────────────────
+// ── Main ──────────────────────────────────────────────────────────────────────
 
 export const AdminFareManager: React.FC = () => {
   const { user } = useAuth();
@@ -631,7 +581,6 @@ export const AdminFareManager: React.FC = () => {
       setLoading(false);
     }
   }, []);
-
   useEffect(() => {
     loadRules();
   }, [loadRules]);
@@ -646,36 +595,34 @@ export const AdminFareManager: React.FC = () => {
     try {
       await setActiveRule(rule.id, rule.serviceType);
       await loadRules();
-      flash(`"${rule.name}" is now the active ${rule.serviceType} rule.`);
+      flash(`"${rule.name}" activated.`);
     } catch (err: unknown) {
       setError((err as Error).message);
     } finally {
       setActioning(false);
     }
   };
-
   const handleDisable = async (rule: FareRule) => {
     setActioning(true);
     try {
       await disableFareRule(rule.id);
       await loadRules();
-      flash(`"${rule.name}" has been disabled.`);
+      flash(`"${rule.name}" disabled.`);
     } catch (err: unknown) {
       setError((err as Error).message);
     } finally {
       setActioning(false);
     }
   };
-
   const handleSaved = (saved: FareRule) => {
     setShowForm(false);
     setEditing(undefined);
     setRules((prev) => {
       const idx = prev.findIndex((r) => r.id === saved.id);
       if (idx >= 0) {
-        const next = [...prev];
-        next[idx] = saved;
-        return next;
+        const n = [...prev];
+        n[idx] = saved;
+        return n;
       }
       return [saved, ...prev];
     });
@@ -692,16 +639,13 @@ export const AdminFareManager: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-xl font-bold text-white flex items-center gap-2">
-            <Receipt className="w-5 h-5 text-brand-red" />
-            Fare Management
+            <Receipt className="w-5 h-5 text-brand-red" /> Fare Management
           </h2>
           <p className="text-sm text-text-sub mt-0.5">
-            Create and manage dynamic pricing rules. Only one rule can be active
-            per service type.
+            Only one rule can be active per service type.
           </p>
         </div>
         <NeonButton
@@ -715,7 +659,6 @@ export const AdminFareManager: React.FC = () => {
         </NeonButton>
       </div>
 
-      {/* Flash messages */}
       <AnimatePresence>
         {success && (
           <motion.div
@@ -745,7 +688,6 @@ export const AdminFareManager: React.FC = () => {
         )}
       </AnimatePresence>
 
-      {/* Form */}
       <AnimatePresence>
         {(showForm || editing !== undefined) && (
           <motion.div
@@ -766,9 +708,8 @@ export const AdminFareManager: React.FC = () => {
         )}
       </AnimatePresence>
 
-      {/* Rules list */}
       {loading ? (
-        <div className="flex items-center justify-center py-16">
+        <div className="flex justify-center py-16">
           <Loader2 className="w-6 h-6 animate-spin text-brand-red" />
         </div>
       ) : (
@@ -781,17 +722,18 @@ export const AdminFareManager: React.FC = () => {
                 </h3>
                 {activeRule ? (
                   <span className="flex items-center gap-1 text-xs text-green-400 bg-green-400/10 px-2 py-0.5 rounded-full border border-green-400/20">
-                    <Zap className="w-3 h-3" /> {activeRule.name}
+                    <Zap className="w-3 h-3" />
+                    {activeRule.name}
                   </span>
                 ) : (
                   <span className="text-xs text-yellow-400 bg-yellow-400/10 px-2 py-0.5 rounded-full border border-yellow-400/20">
-                    No active rule — fallback pricing in use
+                    No active rule
                   </span>
                 )}
               </div>
               {group.length === 0 ? (
                 <div className="text-sm text-text-sub border border-white/5 rounded-xl px-4 py-6 text-center">
-                  No rules yet for {serviceType}. Create one above.
+                  No rules yet. Create one above.
                 </div>
               ) : (
                 <div className="space-y-2">

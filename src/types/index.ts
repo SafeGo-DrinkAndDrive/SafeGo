@@ -56,11 +56,6 @@ export type BookingStatus =
   | "ongoing"
   | "completed"
   | "cancelled";
-
-/**
- * standard  — pickup ≥ immediateThresholdMins away → normal fare
- * immediate — pickup between minAdvanceMins and immediateThresholdMins → fixed fare
- */
 export type BookingType = "standard" | "immediate";
 
 export interface LatLng {
@@ -85,14 +80,14 @@ export interface Booking {
   dropLocation: string;
   dropCoords: LatLng;
   distance: number;
-  duration?: number; // legacy hours field
-  estimatedDurationMins?: number; // F2: minutes from Maps
+  duration?: number;
+  estimatedDurationMins?: number;
   serviceType: ServiceType;
   serviceDetail?: string;
   fare: number;
   fareRuleId?: string;
-  bookingType: BookingType; // F1
-  waitingSurcharge?: number; // F3: added after trip
+  bookingType: BookingType;
+  waitingSurcharge?: number;
   status: BookingStatus;
   scheduledDate: string;
   scheduledTime: string;
@@ -114,16 +109,27 @@ export interface UpdateStatusPayload {
   status: BookingStatus;
 }
 
-// ── Booking Policy (admin-configurable) ───────────────────────────────────────
-// Stored at: /appSettings/bookingPolicy
+// ── Booking Policy ────────────────────────────────────────────────────────────
+// Stored at /appSettings/bookingPolicy in Firestore.
+// All values are admin-configurable — nothing is hardcoded in the app.
 
 export interface BookingPolicy {
-  minAdvanceMins: number; // hard block below this — default 40
-  immediateThresholdMins: number; // immediate booking window — default 90
-  immediateBaseFare: number; // fixed fare for immediate — default 3000
+  // Time window rules
+  minAdvanceMins: number; // hard block — default 40
+  immediateThresholdMins: number; // window — default 90
+  immediateBaseFare: number; // fixed LKR — default 3000
+
+  // Waiting surcharge (Distance bookings only)
   freeWaitingMins: number; // grace period — default 15
   waitingIntervalMins: number; // billing block — default 15
   waitingChargePerInterval: number; // LKR per block — default 300
+
+  // Package slot configuration (admin-managed)
+  // Slots that appear in the booking UI for each service type.
+  // Values are strings like '2h', '3h', '24h', '48h'.
+  hourlySlots: string[]; // default: ['2h','3h','4h','5h']
+  fullDaySlots: string[]; // default: ['6h','12h','24h','48h']
+
   updatedAt: string;
   updatedBy: string;
 }
@@ -138,6 +144,8 @@ export const DEFAULT_BOOKING_POLICY: Omit<
   freeWaitingMins: 15,
   waitingIntervalMins: 15,
   waitingChargePerInterval: 300,
+  hourlySlots: ["2h", "3h", "4h", "5h"],
+  fullDaySlots: ["6h", "12h", "24h", "48h"],
 };
 
 // ── Fare ──────────────────────────────────────────────────────────────────────
