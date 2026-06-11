@@ -1,9 +1,9 @@
-import React from 'react';
-import { motion } from 'framer-motion';
-import { Link } from 'react-router-dom';
-import { Facebook, Instagram, MessageCircle, Mail, Phone } from 'lucide-react';
+import React from "react";
+import { motion } from "framer-motion";
+import { Link } from "react-router-dom";
+import { Facebook, Instagram, MessageCircle, Mail, Phone } from "lucide-react";
 const linkHoverClass =
-'text-text-sub hover:text-brand-red transition-colors duration-300 text-sm';
+  "text-text-sub hover:text-brand-red transition-colors duration-300 text-sm";
 export const Footer: React.FC = () => {
   return (
     <footer className="relative border-t border-white/5">
@@ -18,8 +18,8 @@ export const Footer: React.FC = () => {
               <img
                 src="/logo.jpg"
                 alt="SafeGo Logo"
-                className="h-14 w-auto rounded-lg object-contain" />
-              
+                className="h-14 w-auto rounded-lg object-contain"
+              />
             </Link>
             <p className="text-text-sub text-sm leading-relaxed max-w-xs">
               Safe rides home, anytime. Professional chauffeur service for you
@@ -34,29 +34,29 @@ export const Footer: React.FC = () => {
             </h4>
             <ul className="space-y-3">
               {[
-              {
-                label: 'Home',
-                to: '/'
-              },
-              {
-                label: 'Book a Ride',
-                to: '/booking'
-              },
-              {
-                label: 'Register',
-                to: '/register'
-              },
-              {
-                label: 'Login',
-                to: '/login'
-              }].
-              map((link) =>
-              <li key={link.label}>
+                {
+                  label: "Home",
+                  to: "/",
+                },
+                {
+                  label: "Book a Ride",
+                  to: "/booking",
+                },
+                {
+                  label: "Register",
+                  to: "/register",
+                },
+                {
+                  label: "Login",
+                  to: "/login",
+                },
+              ].map((link) => (
+                <li key={link.label}>
                   <Link to={link.to} className={linkHoverClass}>
                     {link.label}
                   </Link>
                 </li>
-              )}
+              ))}
             </ul>
           </div>
 
@@ -66,13 +66,17 @@ export const Footer: React.FC = () => {
               Legal
             </h4>
             <ul className="space-y-3">
-              {['Privacy Policy', 'Terms of Service', 'Refund Policy'].map(
-                (item) =>
-                <li key={item}>
-                    <button className={linkHoverClass}>{item}</button>
-                  </li>
-
-              )}
+              {[
+                { label: "Privacy Policy", to: "/privacy-policy" },
+                { label: "Terms of Service", to: "/terms-of-service" },
+                { label: "Refund Policy", to: "/refund-policy" },
+              ].map((item) => (
+                <li key={item.label}>
+                  <Link to={item.to} className={linkHoverClass}>
+                    {item.label}
+                  </Link>
+                </li>
+              ))}
             </ul>
           </div>
 
@@ -84,20 +88,20 @@ export const Footer: React.FC = () => {
             <ul className="space-y-3">
               <li>
                 <a
-                  href="mailto:hello@safego.lk"
-                  className={`${linkHoverClass} flex items-center gap-2`}>
-                  
+                  href="mailto:safego.drinkanddrive@gmail.com"
+                  className={`${linkHoverClass} flex items-center gap-2`}
+                >
                   <Mail className="w-4 h-4" />
-                  hello@safego.lk
+                  safego.drinkanddrive@gmail.com
                 </a>
               </li>
               <li>
                 <a
-                  href="tel:+94770000000"
-                  className={`${linkHoverClass} flex items-center gap-2`}>
-                  
+                  href="tel:+94112839829"
+                  className={`${linkHoverClass} flex items-center gap-2`}
+                >
                   <Phone className="w-4 h-4" />
-                  +94 77 000 0000
+                  0112 839 829
                 </a>
               </li>
             </ul>
@@ -105,40 +109,40 @@ export const Footer: React.FC = () => {
             {/* Social icons */}
             <div className="flex items-center gap-3 pt-2">
               {[
-              {
-                icon: Facebook,
-                href: '#',
-                label: 'Facebook'
-              },
-              {
-                icon: Instagram,
-                href: '#',
-                label: 'Instagram'
-              },
-              {
-                icon: MessageCircle,
-                href: 'https://wa.me/94770000000',
-                label: 'WhatsApp'
-              }].
-              map((social) =>
-              <motion.a
-                key={social.label}
-                href={social.href}
-                target="_blank"
-                rel="noopener noreferrer"
-                aria-label={social.label}
-                whileHover={{
-                  scale: 1.15,
-                  y: -2
-                }}
-                whileTap={{
-                  scale: 0.95
-                }}
-                className="p-2.5 rounded-xl bg-white/5 border border-white/10 text-text-sub hover:text-brand-red hover:border-brand-red/40 hover:shadow-brand transition-all duration-300">
-                
+                {
+                  icon: Facebook,
+                  href: "https://www.facebook.com/profile.php?id=61590608428950",
+                  label: "Facebook",
+                },
+                {
+                  icon: Instagram,
+                  href: "#",
+                  label: "Instagram",
+                },
+                {
+                  icon: MessageCircle,
+                  href: "https://wa.me/+94742396271",
+                  label: "WhatsApp",
+                },
+              ].map((social) => (
+                <motion.a
+                  key={social.label}
+                  href={social.href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label={social.label}
+                  whileHover={{
+                    scale: 1.15,
+                    y: -2,
+                  }}
+                  whileTap={{
+                    scale: 0.95,
+                  }}
+                  className="p-2.5 rounded-xl bg-white/5 border border-white/10 text-text-sub hover:text-brand-red hover:border-brand-red/40 hover:shadow-brand transition-all duration-300"
+                >
                   <social.icon className="w-4 h-4" />
                 </motion.a>
-              )}
+              ))}
             </div>
           </div>
         </div>
@@ -151,6 +155,6 @@ export const Footer: React.FC = () => {
           </p>
         </div>
       </div>
-    </footer>);
-
+    </footer>
+  );
 };

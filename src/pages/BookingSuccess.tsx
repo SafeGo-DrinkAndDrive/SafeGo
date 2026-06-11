@@ -29,7 +29,7 @@ import type { Booking, BookingPolicy } from "../types";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const WHATSAPP_NUMBER = import.meta.env.VITE_WHATSAPP_NUMBER ?? "94770000000";
+const WHATSAPP_NUMBER = import.meta.env.VITE_WHATSAPP_NUMBER ?? "94742396271";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -43,14 +43,14 @@ function fmtMins(mins: number): string {
 
 function buildWhatsAppMsg(booking: Booking, isImmediate: boolean): string {
   return (
-    `🚗 *SafeGo Booking ${isImmediate ? "⚡ IMMEDIATE" : "Confirmed"}*\n\n` +
-    `🆔 ID: ${booking.id.slice(0, 12).toUpperCase()}\n` +
-    `👤 Name: ${booking.userName}\n` +
-    `📞 Phone: ${booking.userPhone}\n` +
-    `📍 Pickup: ${booking.pickupLocation}\n` +
-    `🎯 Drop-off: ${booking.dropLocation}\n` +
-    `🚘 Service: ${booking.serviceType}${booking.serviceDetail ? ` · ${booking.serviceDetail}` : ""}\n` +
-    `📅 Date: ${booking.scheduledDate} at ${booking.scheduledTime}\n` +
+    `*SafeGo Booking ${isImmediate ? "⚡ IMMEDIATE" : "Confirmed"}*\n\n` +
+    `   ID: ${booking.id.slice(0, 12).toUpperCase()}\n` +
+    `   Name: ${booking.userName}\n` +
+    `   Phone: ${booking.userPhone}\n` +
+    `   Pickup: ${booking.pickupLocation}\n` +
+    `   Drop-off: ${booking.dropLocation}\n` +
+    `   Service: ${booking.serviceType}${booking.serviceDetail ? ` · ${booking.serviceDetail}` : ""}\n` +
+    `   Date: ${booking.scheduledDate} at ${booking.scheduledTime}\n` +
     (booking.estimatedDurationMins
       ? `⏱ Est. Travel Time: ${fmtMins(booking.estimatedDurationMins)}\n`
       : "") +
