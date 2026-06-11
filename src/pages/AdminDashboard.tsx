@@ -5,7 +5,7 @@
 //   • Completed cards show finalFare, waitingSurcharge, actualDurationMins
 //   • Revenue uses finalFare for completed bookings
 // ─────────────────────────────────────────────────────────────────────────────
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -43,6 +43,7 @@ import { GlassCard } from "../components/GlassCard";
 import { useAdmin } from "../hooks/useAdmin";
 import { AdminFareManager } from "../components/admin/AdminFareManager";
 import { AdminBookingSettings } from "../components/admin/AdminBookingSettings";
+import { getBookingPolicy } from "../services/bookingPolicyService";
 import type { Booking, BookingStatus, AppUser, UserRole } from "../types";
 
 type DateFilter = "day" | "week" | "month" | "all";
@@ -102,6 +103,8 @@ function fmtDuration(mins?: number): string {
 }
 
 // ── Completion modal ──────────────────────────────────────────────────────────
+// Calculates and previews the surcharge live when the modal opens,
+// so the admin can see the exact final fare before confirming.
 
 const CompleteModal: React.FC<{
   booking: Booking;
@@ -109,8 +112,46 @@ const CompleteModal: React.FC<{
   onCancel: () => void;
   loading: boolean;
 }> = ({ booking, onConfirm, onCancel, loading }) => {
-  const isDistanceStandard =
-    booking.serviceType === "Distance" && booking.bookingType === "standard";
+  const [policy, setPolicy] = useState<import("../types").BookingPolicy | null>(
+    null,
+  );
+  const [policyError, setPolicyError] = useState(false);
+
+  // Load policy when modal opens
+  useEffect(() => {
+    getBookingPolicy()
+      .then(setPolicy)
+      .catch(() => setPolicyError(true));
+  }, []);
+
+  const isDistance = booking.serviceType === "Distance";
+
+  // Compute live elapsed time from actualStartTime → now
+  const elapsedMins = booking.actualStartTime
+    ? Math.round(
+        (Date.now() - new Date(booking.actualStartTime).getTime()) / 60_000,
+      )
+    : 0;
+
+  // Preview surcharge using the same formula as firestoreService
+  let previewSurcharge = 0;
+  let previewFinalFare = booking.fare;
+  let extraMins = 0;
+  let billableMins = 0;
+
+  if (isDistance && booking.estimatedDurationMins && policy) {
+    extraMins = Math.max(0, elapsedMins - booking.estimatedDurationMins);
+    billableMins = Math.max(0, extraMins - policy.freeWaitingMins);
+    const blocks =
+      billableMins > 0
+        ? Math.ceil(billableMins / policy.waitingIntervalMins)
+        : 0;
+    previewSurcharge = blocks * policy.waitingChargePerInterval;
+    previewFinalFare = booking.fare + previewSurcharge;
+  }
+
+  const hasSurcharge = previewSurcharge > 0;
+
   return (
     <motion.div
       initial={{ opacity: 0 }}
@@ -128,6 +169,7 @@ const CompleteModal: React.FC<{
         onClick={(e) => e.stopPropagation()}
         className="relative w-full max-w-md bg-background-card border border-white/10 rounded-2xl shadow-2xl overflow-hidden z-10"
       >
+        {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-white/8">
           <h2 className="text-base font-bold text-white flex items-center gap-2">
             <FlagTriangleRight className="w-4 h-4 text-green-400" /> Complete &
@@ -140,41 +182,23 @@ const CompleteModal: React.FC<{
             <X className="w-4 h-4" />
           </button>
         </div>
+
         <div className="px-6 py-5 space-y-4">
           <p className="text-sm text-text-sub">
-            This will record the trip end time and calculate the final fare.
+            Trip end time will be recorded as now and the final fare calculated.
           </p>
-          <ul className="space-y-2">
-            <li className="flex items-start gap-2 text-sm">
-              <span className="text-green-400 mt-0.5">•</span>
-              <span className="text-white">Trip end time recorded as now</span>
-            </li>
-            {isDistanceStandard && booking.estimatedDurationMins && (
-              <li className="flex items-start gap-2 text-sm">
-                <span className="text-green-400 mt-0.5">•</span>
-                <span className="text-white">
-                  Waiting surcharge calculated (LKR 300 per 15 min after 15 min
-                  grace)
-                </span>
-              </li>
-            )}
-            <li className="flex items-start gap-2 text-sm">
-              <span className="text-green-400 mt-0.5">•</span>
-              <span className="text-white">
-                Final fare = estimated fare
-                {isDistanceStandard && booking.estimatedDurationMins
-                  ? " + surcharge"
-                  : " (no surcharge for this type)"}
-              </span>
-            </li>
-          </ul>
-          <div className="bg-white/3 border border-white/8 rounded-xl p-4 space-y-2 text-sm">
+
+          {/* Fare breakdown */}
+          <div className="bg-white/3 border border-white/8 rounded-xl p-4 space-y-2.5 text-sm">
+            {/* Estimated fare */}
             <div className="flex justify-between">
               <span className="text-text-sub">Estimated fare</span>
               <span className="text-white font-medium">
                 LKR {booking.fare.toLocaleString()}
               </span>
             </div>
+
+            {/* Duration comparison */}
             {booking.estimatedDurationMins && (
               <div className="flex justify-between">
                 <span className="text-text-sub">Est. duration</span>
@@ -184,18 +208,124 @@ const CompleteModal: React.FC<{
               </div>
             )}
             {booking.actualStartTime && (
-              <div className="flex justify-between">
-                <span className="text-text-sub">Trip started</span>
-                <span className="text-white">
-                  {new Date(booking.actualStartTime).toLocaleTimeString(
-                    "en-LK",
-                    { hour: "2-digit", minute: "2-digit" },
+              <>
+                <div className="flex justify-between">
+                  <span className="text-text-sub">Trip started</span>
+                  <span className="text-white">
+                    {new Date(booking.actualStartTime).toLocaleTimeString(
+                      "en-LK",
+                      { hour: "2-digit", minute: "2-digit" },
+                    )}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-text-sub">Elapsed so far</span>
+                  <span
+                    className={`font-medium ${elapsedMins > (booking.estimatedDurationMins ?? 0) ? "text-amber-400" : "text-white"}`}
+                  >
+                    {fmtDuration(elapsedMins)}
+                  </span>
+                </div>
+              </>
+            )}
+
+            {/* Surcharge breakdown — only for Distance bookings */}
+            {isDistance && policy && (
+              <>
+                <div className="border-t border-white/8 pt-2 mt-1 space-y-2">
+                  {extraMins > 0 ? (
+                    <>
+                      <div className="flex justify-between">
+                        <span className="text-text-sub">Over estimate</span>
+                        <span className="text-amber-400">
+                          {fmtDuration(extraMins)}
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-text-sub">Free grace period</span>
+                        <span className="text-green-400">
+                          −{fmtDuration(policy.freeWaitingMins)}
+                        </span>
+                      </div>
+                      {billableMins > 0 ? (
+                        <>
+                          <div className="flex justify-between">
+                            <span className="text-text-sub">Billable</span>
+                            <span className="text-white">
+                              {fmtDuration(billableMins)}
+                            </span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-text-sub">
+                              Waiting surcharge (
+                              {Math.ceil(
+                                billableMins / policy.waitingIntervalMins,
+                              )}{" "}
+                              × LKR {policy.waitingChargePerInterval})
+                            </span>
+                            <span className="text-amber-400 font-medium">
+                              +LKR {previewSurcharge.toLocaleString()}
+                            </span>
+                          </div>
+                        </>
+                      ) : (
+                        <div className="flex justify-between">
+                          <span className="text-text-sub">
+                            Within grace period
+                          </span>
+                          <span className="text-green-400">No surcharge</span>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div className="flex justify-between">
+                      <span className="text-text-sub">Waiting surcharge</span>
+                      <span className="text-green-400">
+                        None — within estimate
+                      </span>
+                    </div>
                   )}
-                </span>
+                </div>
+              </>
+            )}
+
+            {/* Final fare total */}
+            <div
+              className={`flex justify-between pt-2 border-t font-semibold text-base ${
+                hasSurcharge ? "border-amber-500/30" : "border-white/10"
+              }`}
+            >
+              <span className="text-white">Final Fare</span>
+              <span
+                className={hasSurcharge ? "text-amber-400" : "text-green-400"}
+              >
+                LKR {previewFinalFare.toLocaleString()}
+              </span>
+            </div>
+
+            {/* Policy loading / error states */}
+            {!policy && !policyError && (
+              <div className="flex items-center gap-2 text-xs text-text-sub pt-1">
+                <Loader2 className="w-3 h-3 animate-spin" /> Loading surcharge
+                policy…
               </div>
             )}
+            {policyError && (
+              <div className="flex items-center gap-2 text-xs text-yellow-400 pt-1">
+                <AlertCircle className="w-3 h-3" /> Could not load policy —
+                surcharge will default to 0
+              </div>
+            )}
+            {!isDistance && (
+              <p className="text-xs text-text-sub pt-1">
+                {booking.serviceType} / {booking.bookingType} — no waiting
+                surcharge applies.
+              </p>
+            )}
           </div>
-          <div className="flex gap-3 pt-1">
+
+          {/* Actions */}
+          <div className="flex gap-3">
             <button
               onClick={onConfirm}
               disabled={loading}

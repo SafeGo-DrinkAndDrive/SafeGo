@@ -201,10 +201,8 @@ export async function firestoreUpdateStatus(
         actualDurationMins = Math.round((endMs - startMs) / 60_000);
       }
 
-      // Surcharge only for standard Distance bookings
-      const hasSurchargeLogic =
-        booking.serviceType === "Distance" &&
-        booking.bookingType === "standard";
+      // Surcharge applies to all Distance bookings (standard + immediate)
+      const hasSurchargeLogic = booking.serviceType === "Distance";
 
       let waitingSurcharge = 0;
       if (hasSurchargeLogic && booking.estimatedDurationMins && policy) {
