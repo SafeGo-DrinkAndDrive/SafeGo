@@ -26,7 +26,6 @@ import {
 import { db } from "../firebase";
 import type {
   FareRule,
-  FareRuleTier,
   FarePricingResult,
   ImmediateFareResult,
   FareRuleServiceType,
