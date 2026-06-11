@@ -1,31 +1,32 @@
 // ─── src/services/firestoreService.ts ────────────────────────────────────────
 // Status transition logic:
 //
-//   pending   → confirmed  : writes actualStartTime (trip clock starts)
-//   confirmed → ongoing    : no time logic (driver en-route → arrived)
-//   ongoing   → completed  : writes actualEndTime, computes actualDurationMins,
-//                            calculates waitingSurcharge, writes finalFare
-//   * → cancelled          : no time logic
+//   pending   → confirmed  : status only (booking accepted)
+//   confirmed → ongoing    : writes actualStartTime (trip timer STARTS)
+//   ongoing   → completed  : atomic transaction — writes actualEndTime,
+//                            computes actualDurationMins, calculates
+//                            waitingSurcharge, writes finalFare
+//   * → cancelled          : status only
 //
-// Surcharge rules (Distance + standard bookings only):
-//   extraMins    = actualDurationMins - estimatedDurationMins
-//   billable     = max(0, extraMins - freeWaitingMins)
-//   blocks       = ceil(billable / waitingIntervalMins)
-//   surcharge    = blocks × waitingChargePerInterval
-//   finalFare    = originalFare + surcharge
+// Surcharge rules (standard Distance bookings only):
+//   extraMins = actualDurationMins - estimatedDurationMins
+//   billable  = max(0, extraMins - freeWaitingMins)
+//   blocks    = ceil(billable / waitingIntervalMins)
+//   surcharge = blocks × waitingChargePerInterval
+//   finalFare = originalFare + surcharge
 //
-// If estimatedDurationMins is missing (legacy booking), surcharge = 0.
 // Surcharge is never applied to Hourly, Full Day, or Immediate bookings.
+// If estimatedDurationMins is missing (legacy booking), surcharge = 0.
 // ─────────────────────────────────────────────────────────────────────────────
 import {
   collection,
   addDoc,
   getDocs,
   doc,
-  getDoc,
   updateDoc,
   query,
   where,
+  runTransaction,
   orderBy,
   serverTimestamp,
   limit,
@@ -90,7 +91,7 @@ export async function firestoreCreateBooking(
     fareRuleId: fareRuleId ?? null,
     bookingType,
     waitingSurcharge: null, // set on completion
-    actualStartTime: null, // set on confirmed
+    actualStartTime: null, // set on ongoing
     actualEndTime: null, // set on completed
     actualDurationMins: null, // set on completed
     status: "pending" as BookingStatus,
@@ -135,7 +136,7 @@ export async function firestoreUpdateStatus(
   const now = new Date().toISOString();
   const bookRef = doc(db, "bookings", bookingId);
 
-  // ── confirmed: no time logic — driver assigned, not yet started ─────────
+  // ── confirmed: booking accepted, no time logic yet ────────────────────────
   if (status === "confirmed") {
     await updateDoc(bookRef, {
       status,
@@ -145,90 +146,102 @@ export async function firestoreUpdateStatus(
     return { status };
   }
 
-  // ── ongoing: driver has arrived, trip starts — record actualStartTime ────
+  // ── ongoing: driver has started the trip — timer begins ──────────────────
   if (status === "ongoing") {
-    const update = {
+    await updateDoc(bookRef, {
       status,
       actualStartTime: now,
       updatedAt: now,
       _serverTs: serverTimestamp(),
-    };
-    await updateDoc(bookRef, update);
+    });
     return { status, actualStartTime: now };
   }
 
-  // ── completed: stop the clock, calculate surcharge, write finalFare ───────
+  // ── completed: atomic transaction — prevents double-calculation ───────────
+  // runTransaction makes the read + write a single atomic operation.
+  // If two admins click Complete simultaneously, Firestore detects the
+  // conflict, retries once, hits the idempotency guard, and returns the
+  // already-written values — surcharge is never applied twice.
   if (status === "completed") {
-    // Read the current booking to get start time + fare details
-    const snap = await getDoc(bookRef);
-    if (!snap.exists()) throw new Error("Booking not found");
-
-    const booking = snap.data() as Booking & {
-      actualStartTime?: string;
-      estimatedDurationMins?: number;
-      bookingType?: BookingType;
-      finalFare?: number;
-    };
-
-    const actualEndTime = now;
-
-    // Calculate actual duration from actualStartTime → now
-    let actualDurationMins = 0;
-    if (booking.actualStartTime) {
-      const startMs = new Date(booking.actualStartTime).getTime();
-      const endMs = new Date(actualEndTime).getTime();
-      actualDurationMins = Math.round((endMs - startMs) / 60_000);
+    // Fetch policy outside the transaction — it's read-only and cached,
+    // so it doesn't need to be part of the atomic read/write.
+    let policy = null;
+    try {
+      policy = await getBookingPolicy();
+    } catch {
+      /* 0 surcharge on failure */
     }
 
-    // Determine if surcharge applies:
-    // Only for standard Distance bookings — not Hourly, Full Day, or Immediate
-    const isDistanceBooking = booking.serviceType === "Distance";
-    const isStandardBooking = booking.bookingType === "standard";
-    const hasSurchargeLogic = isDistanceBooking && isStandardBooking;
+    const result = await runTransaction(db, async (tx) => {
+      const snap = await tx.get(bookRef);
+      if (!snap.exists()) throw new Error("Booking not found");
 
-    let waitingSurcharge = 0;
-    let finalFare = booking.fare;
+      // Cast directly to Booking — all fields including actualStartTime,
+      // actualEndTime, actualDurationMins, finalFare are on the interface.
+      const booking = snap.data() as Booking;
 
-    if (hasSurchargeLogic && booking.estimatedDurationMins) {
-      const extraMins = Math.max(
-        0,
-        actualDurationMins - booking.estimatedDurationMins,
-      );
-      if (extraMins > 0) {
-        try {
-          const policy = await getBookingPolicy();
+      // Idempotency guard — already completed, return existing values
+      if (booking.status === "completed") {
+        return {
+          status: "completed" as BookingStatus,
+          actualEndTime: booking.actualEndTime,
+          actualDurationMins: booking.actualDurationMins,
+          waitingSurcharge: booking.waitingSurcharge ?? 0,
+          finalFare: booking.finalFare ?? booking.fare,
+        } as Partial<Booking>;
+      }
+
+      const actualEndTime = now;
+
+      // Actual trip duration: timer started at ongoing → now
+      let actualDurationMins = 0;
+      if (booking.actualStartTime) {
+        const startMs = new Date(booking.actualStartTime).getTime();
+        const endMs = new Date(actualEndTime).getTime();
+        actualDurationMins = Math.round((endMs - startMs) / 60_000);
+      }
+
+      // Surcharge only for standard Distance bookings
+      const hasSurchargeLogic =
+        booking.serviceType === "Distance" &&
+        booking.bookingType === "standard";
+
+      let waitingSurcharge = 0;
+      if (hasSurchargeLogic && booking.estimatedDurationMins && policy) {
+        const extraMins = Math.max(
+          0,
+          actualDurationMins - booking.estimatedDurationMins,
+        );
+        if (extraMins > 0) {
           waitingSurcharge = calculateWaitingSurcharge(extraMins, policy);
-        } catch {
-          // Policy fetch failed — default to 0 surcharge, don't block completion
-          waitingSurcharge = 0;
         }
       }
-    }
 
-    finalFare = booking.fare + waitingSurcharge;
+      const finalFare = booking.fare + waitingSurcharge;
 
-    const update = {
-      status,
-      actualEndTime,
-      actualDurationMins,
-      waitingSurcharge,
-      finalFare,
-      updatedAt: now,
-      _serverTs: serverTimestamp(),
-    };
+      tx.update(bookRef, {
+        status,
+        actualEndTime,
+        actualDurationMins,
+        waitingSurcharge,
+        finalFare,
+        updatedAt: now,
+        _serverTs: serverTimestamp(),
+      });
 
-    await updateDoc(bookRef, update);
+      return {
+        status,
+        actualEndTime,
+        actualDurationMins,
+        waitingSurcharge,
+        finalFare,
+      } as Partial<Booking>;
+    });
 
-    return {
-      status,
-      actualEndTime,
-      actualDurationMins,
-      waitingSurcharge,
-      finalFare,
-    } as Partial<Booking>;
+    return result;
   }
 
-  // ── all other transitions (ongoing, cancelled) ────────────────────────────
+  // ── cancelled + any other transition ─────────────────────────────────────
   await updateDoc(bookRef, {
     status,
     updatedAt: now,

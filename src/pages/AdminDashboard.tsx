@@ -6,6 +6,7 @@
 //   • Revenue uses finalFare for completed bookings
 // ─────────────────────────────────────────────────────────────────────────────
 import React, { useState } from "react";
+import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Activity,
@@ -292,16 +293,19 @@ const StatusUpdater: React.FC<{
           <RefreshCw className="w-3 h-3 text-text-sub animate-spin" />
         )}
       </div>
-      <AnimatePresence>
-        {pending === "completed" && (
-          <CompleteModal
-            booking={booking}
-            loading={loading}
-            onConfirm={() => doUpdate("completed")}
-            onCancel={() => setPending(null)}
-          />
-        )}
-      </AnimatePresence>
+      {createPortal(
+        <AnimatePresence>
+          {pending === "completed" && (
+            <CompleteModal
+              booking={booking}
+              loading={loading}
+              onConfirm={() => doUpdate("completed")}
+              onCancel={() => setPending(null)}
+            />
+          )}
+        </AnimatePresence>,
+        document.body,
+      )}
     </>
   );
 };
