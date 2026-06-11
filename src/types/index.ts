@@ -110,26 +110,15 @@ export interface UpdateStatusPayload {
 }
 
 // ── Booking Policy ────────────────────────────────────────────────────────────
-// Stored at /appSettings/bookingPolicy in Firestore.
-// All values are admin-configurable — nothing is hardcoded in the app.
 
 export interface BookingPolicy {
-  // Time window rules
-  minAdvanceMins: number; // hard block — default 40
-  immediateThresholdMins: number; // window — default 90
-  immediateBaseFare: number; // fixed LKR — default 3000
-
-  // Waiting surcharge (Distance bookings only)
-  freeWaitingMins: number; // grace period — default 15
-  waitingIntervalMins: number; // billing block — default 15
-  waitingChargePerInterval: number; // LKR per block — default 300
-
-  // Package slot configuration (admin-managed)
-  // Slots that appear in the booking UI for each service type.
-  // Values are strings like '2h', '3h', '24h', '48h'.
-  hourlySlots: string[]; // default: ['2h','3h','4h','5h']
-  fullDaySlots: string[]; // default: ['6h','12h','24h','48h']
-
+  minAdvanceMins: number;
+  immediateThresholdMins: number;
+  freeWaitingMins: number;
+  waitingIntervalMins: number;
+  waitingChargePerInterval: number;
+  hourlySlots: string[];
+  fullDaySlots: string[];
   updatedAt: string;
   updatedBy: string;
 }
@@ -140,7 +129,6 @@ export const DEFAULT_BOOKING_POLICY: Omit<
 > = {
   minAdvanceMins: 40,
   immediateThresholdMins: 90,
-  immediateBaseFare: 3000,
   freeWaitingMins: 15,
   waitingIntervalMins: 15,
   waitingChargePerInterval: 300,
@@ -148,7 +136,22 @@ export const DEFAULT_BOOKING_POLICY: Omit<
   fullDaySlots: ["6h", "12h", "24h", "48h"],
 };
 
-// ── Fare ──────────────────────────────────────────────────────────────────────
+// ── Fare Rules ────────────────────────────────────────────────────────────────
+//
+// FareRuleServiceType is a superset of ServiceType — it adds 'Immediate Distance'
+// as a separate engine for immediate bookings. This keeps the two pricing
+// systems completely independent in Firestore and in admin configuration.
+//
+// Firestore collection: /fareRules
+//   Standard bookings  → query serviceType == 'Distance'
+//   Immediate bookings → query serviceType == 'Immediate Distance'
+//   Hourly/Full Day    → query serviceType == 'Hourly' | 'Full Day'
+
+export type FareRuleServiceType =
+  | "Distance" // standard distance booking
+  | "Immediate Distance" // immediate booking — separate tiers
+  | "Hourly"
+  | "Full Day";
 
 export interface FareRuleTier {
   minKm: number;
@@ -160,7 +163,7 @@ export interface FareRuleTier {
 export interface FareRule {
   id: string;
   name: string;
-  serviceType: ServiceType;
+  serviceType: FareRuleServiceType;
   isActive: boolean;
   description: string;
   tiers?: FareRuleTier[];
@@ -169,6 +172,8 @@ export interface FareRule {
   updatedAt: string;
   createdBy: string;
 }
+
+// ── Standard fare result (returned by calculateDynamicFare) ───────────────────
 
 export interface FarePricingResult {
   fare: number;
@@ -184,6 +189,27 @@ export interface FarePricingResult {
     total: number;
   };
 }
+
+// ── Immediate fare result (returned by calculateImmediateFare) ────────────────
+// Completely separate from FarePricingResult — no shared fields that could
+// cause confusion when rendering the fare card.
+
+export interface ImmediateFareResult {
+  fare: number;
+  distanceKm: number;
+  durationMins: number;
+  fareRuleId: string;
+  fareRuleName: string;
+  breakdown: {
+    baseCharge: number;
+    distanceCharge: number;
+    ratePerKm: number;
+    tierUsed?: string;
+    total: number;
+  };
+}
+
+// ── Legacy / compat ───────────────────────────────────────────────────────────
 
 export interface FareResult {
   distanceKm: number;

@@ -1,6 +1,8 @@
 // ─── src/components/admin/AdminFareManager.tsx ───────────────────────────────
-// Change: HOURLY_SLOTS now 1h–8h, FULLDAY_SLOTS now 6h/12h/24h/48h
-// Everything else identical to the last working version.
+// Change: Added 'Immediate Distance' as a service type option.
+// Admins create a separate fare rule for immediate bookings with its own
+// distance tiers. These are stored in the same /fareRules Firestore collection
+// but with serviceType == 'Immediate Distance', keeping them completely separate.
 // ─────────────────────────────────────────────────────────────────────────────
 import React, { useEffect, useState, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -30,26 +32,38 @@ import {
 import { useAuth } from "../../contexts/AuthContext";
 import { GlassCard } from "../GlassCard";
 import { NeonButton } from "../NeonButton";
-import type { FareRule, FareRuleTier, ServiceType } from "../../types";
+import type { FareRule, FareRuleTier, FareRuleServiceType } from "../../types";
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Service type options ──────────────────────────────────────────────────────
 
-function parseNum(s: string): number {
-  const n = parseFloat(s);
-  return isNaN(n) || n < 0 ? 0 : n;
-}
+const SERVICE_TYPE_OPTIONS: {
+  value: FareRuleServiceType;
+  label: string;
+  description: string;
+}[] = [
+  {
+    value: "Distance",
+    label: "Distance",
+    description: "Standard distance-based bookings",
+  },
+  {
+    value: "Immediate Distance",
+    label: "Immediate Distance",
+    description:
+      "Bookings within the immediate window — separate rate structure",
+  },
+  { value: "Hourly", label: "Hourly", description: "Hourly package bookings" },
+  {
+    value: "Full Day",
+    label: "Full Day",
+    description: "Full day / multi-hour package bookings",
+  },
+];
 
-function previewTieredFare(km: number, tiers: FareRuleTier[]): number {
-  if (!tiers.length) return 0;
-  const sorted = [...tiers].sort((a, b) => a.minKm - b.minKm);
-  let tier = sorted[0];
-  for (const t of sorted) {
-    if (km >= t.minKm) tier = t;
-  }
-  return tier.baseCharge + Math.round(km * tier.ratePerKm);
-}
+const HOURLY_SLOTS = ["1h", "2h", "3h", "4h", "5h", "6h", "8h"];
+const FULLDAY_SLOTS = ["6h", "12h", "24h", "48h"];
 
-// ── String-based tier state ───────────────────────────────────────────────────
+// ── Number-as-string tier state ───────────────────────────────────────────────
 
 interface TierStr {
   minKm: string;
@@ -58,6 +72,10 @@ interface TierStr {
   ratePerKm: string;
 }
 
+function parseNum(s: string): number {
+  const n = parseFloat(s);
+  return isNaN(n) || n < 0 ? 0 : n;
+}
 function tierToStr(t: FareRuleTier): TierStr {
   return {
     minKm: String(t.minKm),
@@ -75,25 +93,30 @@ function strToTier(s: TierStr): FareRuleTier {
   };
 }
 
-const DEFAULT_TIERS_STR: TierStr[] = [
+function previewTieredFare(km: number, tiers: FareRuleTier[]): number {
+  if (!tiers.length) return 0;
+  const sorted = [...tiers].sort((a, b) => a.minKm - b.minKm);
+  let tier = sorted[0];
+  for (const t of sorted) {
+    if (km >= t.minKm) tier = t;
+  }
+  return tier.baseCharge + Math.round(km * tier.ratePerKm);
+}
+
+const DEFAULT_TIERS: TierStr[] = [
   { minKm: "0", maxKm: "10", baseCharge: "500", ratePerKm: "150" },
   { minKm: "10", maxKm: "20", baseCharge: "0", ratePerKm: "130" },
   { minKm: "20", maxKm: "30", baseCharge: "0", ratePerKm: "110" },
   { minKm: "30", maxKm: "9999", baseCharge: "0", ratePerKm: "100" },
 ];
 
+const DEFAULT_IMMEDIATE_TIERS: TierStr[] = [
+  { minKm: "0", maxKm: "10", baseCharge: "3000", ratePerKm: "0" },
+  { minKm: "10", maxKm: "9999", baseCharge: "3000", ratePerKm: "100" },
+];
+
 const inputCls =
   "w-full bg-background-darker/60 border border-white/10 rounded-lg px-3 py-2 text-white text-sm outline-none focus:border-brand-red transition-all";
-
-// ── Updated slot lists ────────────────────────────────────────────────────────
-// Hourly: full range 1h–8h (policy controls which subset users see)
-const HOURLY_SLOTS = ["1h", "2h", "3h", "4h", "5h", "6h", "8h"];
-// Full Day: extended to include 24h and 48h
-const FULLDAY_SLOTS = ["6h", "12h", "24h", "48h"];
-
-type FlatRatesStr = Record<string, string>;
-
-// ── Tier editor row ────────────────────────────────────────────────────────────
 
 const TierRow: React.FC<{
   tier: TierStr;
@@ -113,9 +136,9 @@ const TierRow: React.FC<{
     ).map(([field, label]) => (
       <div key={field}>
         <label className="block text-xs text-text-sub mb-1">
-          {label}{" "}
+          {label}
           {isLast && field === "maxKm" && (
-            <span className="text-text-sub/50">(∞)</span>
+            <span className="text-text-sub/50"> (∞)</span>
           )}
         </label>
         <input
@@ -140,7 +163,7 @@ const TierRow: React.FC<{
   </div>
 );
 
-// ── Flat rates editor ─────────────────────────────────────────────────────────
+type FlatRatesStr = Record<string, string>;
 
 const FlatRatesEditor: React.FC<{
   serviceType: "Hourly" | "Full Day";
@@ -173,8 +196,6 @@ const FlatRatesEditor: React.FC<{
   );
 };
 
-// ── Rule form ─────────────────────────────────────────────────────────────────
-
 interface RuleFormProps {
   initial?: FareRule;
   onSave: (r: FareRule) => void;
@@ -189,16 +210,24 @@ const RuleForm: React.FC<RuleFormProps> = ({
   adminUid,
 }) => {
   const [name, setName] = useState(initial?.name ?? "");
-  const [serviceType, setServiceType] = useState<ServiceType>(
+  const [serviceType, setServiceType] = useState<FareRuleServiceType>(
     initial?.serviceType ?? "Distance",
   );
   const [description, setDescription] = useState(initial?.description ?? "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [previewKmStr, setPreviewKmStr] = useState("15");
+  const [previewKm, setPreviewKm] = useState("15");
+
+  const isDistanceBased =
+    serviceType === "Distance" || serviceType === "Immediate Distance";
+
+  const getDefaultTiers = (st: FareRuleServiceType): TierStr[] =>
+    st === "Immediate Distance" ? DEFAULT_IMMEDIATE_TIERS : DEFAULT_TIERS;
 
   const [tierStrs, setTierStrs] = useState<TierStr[]>(
-    initial?.tiers ? initial.tiers.map(tierToStr) : DEFAULT_TIERS_STR,
+    initial?.tiers
+      ? initial.tiers.map(tierToStr)
+      : getDefaultTiers(initial?.serviceType ?? "Distance"),
   );
   const [flatRatesStr, setFlatRatesStr] = useState<FlatRatesStr>(() => {
     if (!initial?.flatRates) return {};
@@ -208,9 +237,16 @@ const RuleForm: React.FC<RuleFormProps> = ({
   });
 
   const previewFare = previewTieredFare(
-    parseNum(previewKmStr),
+    parseNum(previewKm),
     tierStrs.map(strToTier),
   );
+
+  const handleServiceTypeChange = (st: FareRuleServiceType) => {
+    setServiceType(st);
+    if (st === "Distance" || st === "Immediate Distance") {
+      setTierStrs(getDefaultTiers(st));
+    }
+  };
 
   const updateTier = (i: number, f: keyof TierStr, v: string) =>
     setTierStrs((prev) =>
@@ -238,7 +274,7 @@ const RuleForm: React.FC<RuleFormProps> = ({
       setError("Rule name is required.");
       return;
     }
-    if (serviceType === "Distance" && !tierStrs.length) {
+    if (isDistanceBased && !tierStrs.length) {
       setError("At least one tier required.");
       return;
     }
@@ -255,7 +291,7 @@ const RuleForm: React.FC<RuleFormProps> = ({
         description: description.trim(),
         isActive: initial?.isActive ?? false,
         createdBy: adminUid,
-        ...(serviceType === "Distance" ? { tiers } : { flatRates }),
+        ...(isDistanceBased ? { tiers } : { flatRates }),
       };
       let saved: FareRule;
       if (initial) {
@@ -301,15 +337,44 @@ const RuleForm: React.FC<RuleFormProps> = ({
             </label>
             <select
               value={serviceType}
-              onChange={(e) => setServiceType(e.target.value as ServiceType)}
+              onChange={(e) =>
+                handleServiceTypeChange(e.target.value as FareRuleServiceType)
+              }
               className={inputCls}
             >
-              <option value="Distance">Distance</option>
-              <option value="Hourly">Hourly</option>
-              <option value="Full Day">Full Day</option>
+              {SERVICE_TYPE_OPTIONS.map(({ value, label }) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
             </select>
+            <p className="text-xs text-text-sub mt-1">
+              {
+                SERVICE_TYPE_OPTIONS.find((o) => o.value === serviceType)
+                  ?.description
+              }
+            </p>
           </div>
         </div>
+
+        {/* Immediate Distance info box */}
+        {serviceType === "Immediate Distance" && (
+          <div className="flex items-start gap-3 p-4 rounded-xl bg-amber-500/8 border border-amber-500/20">
+            <Zap className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
+            <div className="text-xs text-amber-300/80 leading-relaxed">
+              <p className="font-semibold text-amber-300 mb-1">
+                Immediate Booking Rate
+              </p>
+              <p>
+                This rule applies only when a user books within the immediate
+                window (configured in Settings). It is completely separate from
+                the standard Distance rule. Typical setup: a higher base charge
+                for short trips, then a per-km rate for longer distances.
+              </p>
+            </div>
+          </div>
+        )}
+
         <div>
           <label className="block text-xs text-text-sub uppercase tracking-wide mb-1.5">
             Description <span className="text-text-sub/50">(optional)</span>
@@ -317,12 +382,12 @@ const RuleForm: React.FC<RuleFormProps> = ({
           <input
             value={description}
             onChange={(e) => setDescription(e.target.value)}
-            placeholder="e.g. Standard weekend rate"
+            placeholder="e.g. Peak hours immediate rate"
             className={inputCls}
           />
         </div>
 
-        {serviceType === "Distance" ? (
+        {isDistanceBased && (
           <div>
             <div className="flex items-center justify-between mb-3">
               <label className="text-xs text-text-sub uppercase tracking-wide">
@@ -362,8 +427,8 @@ const RuleForm: React.FC<RuleFormProps> = ({
                     type="number"
                     inputMode="numeric"
                     min={0}
-                    value={previewKmStr}
-                    onChange={(e) => setPreviewKmStr(e.target.value)}
+                    value={previewKm}
+                    onChange={(e) => setPreviewKm(e.target.value)}
                     className="w-20 bg-background-darker/60 border border-white/15 rounded-lg px-3 py-1.5 text-white text-sm outline-none focus:border-brand-red text-right"
                     placeholder="15"
                   />
@@ -373,24 +438,17 @@ const RuleForm: React.FC<RuleFormProps> = ({
                 LKR {previewFare.toLocaleString()}
               </p>
               <p className="text-xs text-text-sub mt-0.5">
-                for {parseNum(previewKmStr)} km
+                for {parseNum(previewKm)} km
               </p>
             </div>
           </div>
-        ) : (
+        )}
+
+        {!isDistanceBased && (
           <div>
             <label className="block text-xs text-text-sub uppercase tracking-wide mb-3">
               Flat rates by duration
             </label>
-            <p className="text-xs text-text-sub mb-3">
-              Set rates for all possible slots. Users will only see the slots
-              enabled in
-              <span className="text-white">
-                {" "}
-                Booking Settings → Package Duration Slots
-              </span>
-              . Leave unused slots as 0.
-            </p>
             <FlatRatesEditor
               serviceType={serviceType as "Hourly" | "Full Day"}
               rates={flatRatesStr}
@@ -422,8 +480,6 @@ const RuleForm: React.FC<RuleFormProps> = ({
   );
 };
 
-// ── Rule card ─────────────────────────────────────────────────────────────────
-
 const RuleCard: React.FC<{
   rule: FareRule;
   onEdit: (r: FareRule) => void;
@@ -432,14 +488,21 @@ const RuleCard: React.FC<{
   loading: boolean;
 }> = ({ rule, onEdit, onActivate, onDisable, loading }) => {
   const [expanded, setExpanded] = useState(false);
+  const isImmediate = rule.serviceType === "Immediate Distance";
   return (
     <div
-      className={`rounded-xl border transition-all ${rule.isActive ? "border-brand-red/40 bg-brand-red/5" : "border-white/10 bg-white/3"}`}
+      className={`rounded-xl border transition-all ${
+        rule.isActive
+          ? isImmediate
+            ? "border-amber-500/40 bg-amber-500/5"
+            : "border-brand-red/40 bg-brand-red/5"
+          : "border-white/10 bg-white/3"
+      }`}
     >
       <div className="flex items-center justify-between p-4">
         <div className="flex items-center gap-3 min-w-0">
           <div
-            className={`w-2 h-2 rounded-full flex-shrink-0 ${rule.isActive ? "bg-green-400" : "bg-white/20"}`}
+            className={`w-2 h-2 rounded-full flex-shrink-0 ${rule.isActive ? (isImmediate ? "bg-amber-400" : "bg-green-400") : "bg-white/20"}`}
           />
           <div className="min-w-0">
             <p className="text-sm font-semibold text-white truncate">
@@ -453,7 +516,9 @@ const RuleCard: React.FC<{
         </div>
         <div className="flex items-center gap-2 flex-shrink-0 ml-3">
           {rule.isActive && (
-            <span className="px-2 py-0.5 rounded-full text-xs bg-green-400/10 text-green-400 border border-green-400/20">
+            <span
+              className={`px-2 py-0.5 rounded-full text-xs border ${isImmediate ? "bg-amber-400/10 text-amber-400 border-amber-400/20" : "bg-green-400/10 text-green-400 border-green-400/20"}`}
+            >
               Active
             </span>
           )}
@@ -501,7 +566,9 @@ const RuleCard: React.FC<{
             className="overflow-hidden"
           >
             <div className="px-4 pb-4 border-t border-white/5 pt-3">
-              {rule.serviceType === "Distance" && rule.tiers?.length ? (
+              {(rule.serviceType === "Distance" ||
+                rule.serviceType === "Immediate Distance") &&
+              rule.tiers?.length ? (
                 <table className="w-full text-xs">
                   <thead>
                     <tr className="text-text-sub">
@@ -559,7 +626,38 @@ const RuleCard: React.FC<{
   );
 };
 
-// ── Main ──────────────────────────────────────────────────────────────────────
+// Group definitions — Distance and Immediate Distance shown separately
+const GROUPS: {
+  serviceType: FareRuleServiceType;
+  label: string;
+  description: string;
+  accent: string;
+}[] = [
+  {
+    serviceType: "Distance",
+    label: "Distance",
+    description: "Standard booking pricing",
+    accent: "text-green-400 bg-green-400/10 border-green-400/20",
+  },
+  {
+    serviceType: "Immediate Distance",
+    label: "Immediate Distance",
+    description: "Immediate booking pricing — separate engine",
+    accent: "text-amber-400 bg-amber-400/10 border-amber-400/20",
+  },
+  {
+    serviceType: "Hourly",
+    label: "Hourly",
+    description: "Hourly package pricing",
+    accent: "text-blue-400 bg-blue-400/10 border-blue-400/20",
+  },
+  {
+    serviceType: "Full Day",
+    label: "Full Day",
+    description: "Full day package pricing",
+    accent: "text-purple-400 bg-purple-400/10 border-purple-400/20",
+  },
+];
 
 export const AdminFareManager: React.FC = () => {
   const { user } = useAuth();
@@ -629,14 +727,6 @@ export const AdminFareManager: React.FC = () => {
     flash(editing ? "Rule updated." : "New rule created.");
   };
 
-  const grouped = (["Distance", "Hourly", "Full Day"] as ServiceType[]).map(
-    (st) => ({
-      serviceType: st,
-      rules: rules.filter((r) => r.serviceType === st),
-      activeRule: rules.find((r) => r.serviceType === st && r.isActive),
-    }),
-  );
-
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -645,7 +735,7 @@ export const AdminFareManager: React.FC = () => {
             <Receipt className="w-5 h-5 text-brand-red" /> Fare Management
           </h2>
           <p className="text-sm text-text-sub mt-0.5">
-            Only one rule can be active per service type.
+            Standard and Immediate bookings use completely separate fare rules.
           </p>
         </div>
         <NeonButton
@@ -714,46 +804,54 @@ export const AdminFareManager: React.FC = () => {
         </div>
       ) : (
         <div className="space-y-8">
-          {grouped.map(({ serviceType, rules: group, activeRule }) => (
-            <div key={serviceType}>
-              <div className="flex items-center gap-3 mb-3">
-                <h3 className="text-sm font-semibold text-white uppercase tracking-wide">
-                  {serviceType}
-                </h3>
-                {activeRule ? (
-                  <span className="flex items-center gap-1 text-xs text-green-400 bg-green-400/10 px-2 py-0.5 rounded-full border border-green-400/20">
-                    <Zap className="w-3 h-3" />
-                    {activeRule.name}
-                  </span>
+          {GROUPS.map(({ serviceType, label, description, accent }) => {
+            const group = rules.filter((r) => r.serviceType === serviceType);
+            const activeRule = group.find((r) => r.isActive);
+            return (
+              <div key={serviceType}>
+                <div className="flex items-center gap-3 mb-2">
+                  <div>
+                    <h3 className="text-sm font-semibold text-white uppercase tracking-wide">
+                      {label}
+                    </h3>
+                    <p className="text-xs text-text-sub">{description}</p>
+                  </div>
+                  {activeRule ? (
+                    <span
+                      className={`flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border ml-auto ${accent}`}
+                    >
+                      <Zap className="w-3 h-3" /> {activeRule.name}
+                    </span>
+                  ) : (
+                    <span className="ml-auto text-xs text-yellow-400 bg-yellow-400/10 px-2 py-0.5 rounded-full border border-yellow-400/20">
+                      No active rule
+                    </span>
+                  )}
+                </div>
+                {group.length === 0 ? (
+                  <div className="text-sm text-text-sub border border-white/5 rounded-xl px-4 py-5 text-center">
+                    No {label} rules yet. Create one above.
+                  </div>
                 ) : (
-                  <span className="text-xs text-yellow-400 bg-yellow-400/10 px-2 py-0.5 rounded-full border border-yellow-400/20">
-                    No active rule
-                  </span>
+                  <div className="space-y-2">
+                    {group.map((rule) => (
+                      <RuleCard
+                        key={rule.id}
+                        rule={rule}
+                        loading={actioning}
+                        onEdit={(r) => {
+                          setEditing(r);
+                          setShowForm(false);
+                        }}
+                        onActivate={handleActivate}
+                        onDisable={handleDisable}
+                      />
+                    ))}
+                  </div>
                 )}
               </div>
-              {group.length === 0 ? (
-                <div className="text-sm text-text-sub border border-white/5 rounded-xl px-4 py-6 text-center">
-                  No rules yet. Create one above.
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  {group.map((rule) => (
-                    <RuleCard
-                      key={rule.id}
-                      rule={rule}
-                      loading={actioning}
-                      onEdit={(r) => {
-                        setEditing(r);
-                        setShowForm(false);
-                      }}
-                      onActivate={handleActivate}
-                      onDisable={handleDisable}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

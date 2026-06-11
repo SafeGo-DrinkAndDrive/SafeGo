@@ -1,9 +1,8 @@
 // ─── src/components/admin/AdminBookingSettings.tsx ───────────────────────────
-// New in this version:
-//   • Hourly package slots — admin picks which durations show in booking UI
-//     Must choose from valid options: 1h–8h
-//   • Full Day package slots — admin picks from 6h, 12h, 24h, 48h
-//   • All existing policy fields unchanged
+// Fixed: removed all references to immediateBaseFare — that field was moved
+// to the Firestore /fareRules collection (serviceType: 'Immediate Distance').
+// The Immediate Booking Rate card is replaced with a info notice pointing
+// admins to Fare Management to configure immediate pricing.
 // ─────────────────────────────────────────────────────────────────────────────
 import React, { useEffect, useState } from "react";
 import { motion } from "framer-motion";
@@ -30,8 +29,6 @@ import { GlassCard } from "../GlassCard";
 import { NeonButton } from "../NeonButton";
 import { DEFAULT_BOOKING_POLICY } from "../../types";
 import type { BookingPolicy } from "../../types";
-
-// ── All possible slots ────────────────────────────────────────────────────────
 
 const ALL_HOURLY_OPTIONS = ["1h", "2h", "3h", "4h", "5h", "6h", "8h"];
 const ALL_FULLDAY_OPTIONS = ["6h", "12h", "24h", "48h"];
@@ -72,7 +69,7 @@ const Field: React.FC<{
   </div>
 );
 
-// ── Slot toggle grid ──────────────────────────────────────────────────────────
+// ── Slot toggle ───────────────────────────────────────────────────────────────
 
 const SlotToggle: React.FC<{
   allOptions: string[];
@@ -82,17 +79,12 @@ const SlotToggle: React.FC<{
 }> = ({ allOptions, selected, onChange, minSelect = 1 }) => {
   const toggle = (slot: string) => {
     if (selected.includes(slot)) {
-      if (selected.length <= minSelect) return; // enforce minimum
+      if (selected.length <= minSelect) return;
       onChange(selected.filter((s) => s !== slot));
     } else {
-      // Keep sorted in natural hour order
-      const next = [...selected, slot].sort(
-        (a, b) => parseInt(a) - parseInt(b),
-      );
-      onChange(next);
+      onChange([...selected, slot].sort((a, b) => parseInt(a) - parseInt(b)));
     }
   };
-
   return (
     <div className="flex flex-wrap gap-2">
       {allOptions.map((slot) => {
@@ -129,17 +121,16 @@ const PolicyPreview: React.FC<{
     },
     {
       label: "Immediate",
-      desc: `${p.minAdvanceMins}–${p.immediateThresholdMins} min → LKR ${p.immediateBaseFare.toLocaleString()} flat`,
+      desc: `${p.minAdvanceMins}–${p.immediateThresholdMins} min → Immediate Distance rule`,
       color: "text-amber-400 bg-amber-400/10 border-amber-400/20",
     },
     {
       label: "Standard",
-      desc: `≥ ${p.immediateThresholdMins} min → distance-based fare`,
+      desc: `≥ ${p.immediateThresholdMins} min → Distance rule`,
       color: "text-green-400 bg-green-400/10 border-green-400/20",
     },
   ];
 
-  // Surcharge example: 50 min extra
   const billable = Math.max(0, 50 - p.freeWaitingMins);
   const blocks = Math.ceil(billable / p.waitingIntervalMins);
   const charge = blocks * p.waitingChargePerInterval;
@@ -248,15 +239,12 @@ export const AdminBookingSettings: React.FC = () => {
   const [lastSaved, setLastSaved] = useState<string | null>(null);
   const [lastSavedBy, setLastSavedBy] = useState<string | null>(null);
 
-  // Numeric fields as strings (avoids double-zero bug)
+  // All stored as strings to avoid double-zero bug
   const [minAdvance, setMinAdvance] = useState(
     String(DEFAULT_BOOKING_POLICY.minAdvanceMins),
   );
   const [immThreshold, setImmThreshold] = useState(
     String(DEFAULT_BOOKING_POLICY.immediateThresholdMins),
-  );
-  const [immFare, setImmFare] = useState(
-    String(DEFAULT_BOOKING_POLICY.immediateBaseFare),
   );
   const [freeWaiting, setFreeWaiting] = useState(
     String(DEFAULT_BOOKING_POLICY.freeWaitingMins),
@@ -267,8 +255,6 @@ export const AdminBookingSettings: React.FC = () => {
   const [waitCharge, setWaitCharge] = useState(
     String(DEFAULT_BOOKING_POLICY.waitingChargePerInterval),
   );
-
-  // Slot arrays
   const [hourlySlots, setHourlySlots] = useState<string[]>(
     DEFAULT_BOOKING_POLICY.hourlySlots,
   );
@@ -281,7 +267,6 @@ export const AdminBookingSettings: React.FC = () => {
       .then((p) => {
         setMinAdvance(String(p.minAdvanceMins));
         setImmThreshold(String(p.immediateThresholdMins));
-        setImmFare(String(p.immediateBaseFare));
         setFreeWaiting(String(p.freeWaitingMins));
         setWaitInterval(String(p.waitingIntervalMins));
         setWaitCharge(String(p.waitingChargePerInterval));
@@ -301,7 +286,6 @@ export const AdminBookingSettings: React.FC = () => {
   const currentPolicy: Omit<BookingPolicy, "updatedAt" | "updatedBy"> = {
     minAdvanceMins: parse(minAdvance, 40),
     immediateThresholdMins: parse(immThreshold, 90),
-    immediateBaseFare: parse(immFare, 3000),
     freeWaitingMins: parse(freeWaiting, 15),
     waitingIntervalMins: parse(waitInterval, 15),
     waitingChargePerInterval: parse(waitCharge, 300),
@@ -331,8 +315,7 @@ export const AdminBookingSettings: React.FC = () => {
     try {
       await saveBookingPolicy(p, user?.uid ?? "admin");
       clearPolicyCache();
-      const now = new Date().toISOString();
-      setLastSaved(now);
+      setLastSaved(new Date().toISOString());
       setLastSavedBy(user?.name ?? "admin");
       setSuccess(true);
       setTimeout(() => setSuccess(false), 3000);
@@ -346,7 +329,6 @@ export const AdminBookingSettings: React.FC = () => {
   const handleReset = () => {
     setMinAdvance(String(DEFAULT_BOOKING_POLICY.minAdvanceMins));
     setImmThreshold(String(DEFAULT_BOOKING_POLICY.immediateThresholdMins));
-    setImmFare(String(DEFAULT_BOOKING_POLICY.immediateBaseFare));
     setFreeWaiting(String(DEFAULT_BOOKING_POLICY.freeWaitingMins));
     setWaitInterval(String(DEFAULT_BOOKING_POLICY.waitingIntervalMins));
     setWaitCharge(String(DEFAULT_BOOKING_POLICY.waitingChargePerInterval));
@@ -368,12 +350,10 @@ export const AdminBookingSettings: React.FC = () => {
       <div className="flex items-start justify-between gap-4">
         <div>
           <h2 className="text-xl font-bold text-white flex items-center gap-2">
-            <Settings className="w-5 h-5 text-brand-red" />
-            Booking Settings
+            <Settings className="w-5 h-5 text-brand-red" /> Booking Settings
           </h2>
           <p className="text-sm text-text-sub mt-0.5">
-            All booking rules, pricing, and package slots. Changes take effect
-            immediately — no code deploy needed.
+            Booking time rules, waiting surcharges, and package slots.
           </p>
         </div>
         {lastSaved && (
@@ -413,7 +393,7 @@ export const AdminBookingSettings: React.FC = () => {
       )}
 
       <div className="grid lg:grid-cols-2 gap-6">
-        {/* ── Left: all config ── */}
+        {/* ── Left: config ── */}
         <div className="space-y-4">
           {/* Time Rules */}
           <GlassCard>
@@ -437,7 +417,7 @@ export const AdminBookingSettings: React.FC = () => {
             />
             <Field
               label="Immediate Booking Threshold"
-              description="Pickup within this window → immediate booking rate."
+              description="Pickup within this window → immediate booking engine."
               icon={<Zap className="w-4 h-4 text-amber-400" />}
               unit="min"
               value={immThreshold}
@@ -446,29 +426,28 @@ export const AdminBookingSettings: React.FC = () => {
             />
           </GlassCard>
 
-          {/* Immediate Pricing */}
+          {/* Immediate pricing info — points to Fare Management */}
           <GlassCard>
-            <div className="flex items-center gap-2 mb-1">
+            <div className="flex items-center gap-2 mb-2">
               <Zap className="w-4 h-4 text-amber-400" />
               <h3 className="text-sm font-semibold text-white">
-                Immediate Booking Rate
+                Immediate Booking Pricing
               </h3>
             </div>
-            <p className="text-xs text-text-sub mb-3">
-              Replaces distance fare for immediate bookings.
-            </p>
-            <Field
-              label="Immediate Base Fare"
-              description="Fixed LKR for all immediate bookings."
-              icon={<DollarSign className="w-4 h-4 text-amber-400" />}
-              unit="LKR"
-              value={immFare}
-              onChange={setImmFare}
-              min={0}
-            />
+            <div className="flex items-start gap-3 p-3 bg-amber-500/8 border border-amber-500/20 rounded-xl">
+              <Info className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
+              <p className="text-xs text-amber-300/80 leading-relaxed">
+                Immediate booking fares are managed separately under{" "}
+                <span className="font-semibold text-amber-300">
+                  Fare Management → Immediate Distance
+                </span>
+                . Create an active Immediate Distance rule there to set base
+                charges and per-km rates for immediate bookings.
+              </p>
+            </div>
           </GlassCard>
 
-          {/* Waiting Surcharge — Distance only */}
+          {/* Waiting Surcharge */}
           <GlassCard>
             <div className="flex items-center gap-2 mb-1">
               <Timer className="w-4 h-4 text-blue-400" />
@@ -478,8 +457,8 @@ export const AdminBookingSettings: React.FC = () => {
             </div>
             <p className="text-xs text-text-sub mb-3">
               Applies to{" "}
-              <span className="text-white font-medium">Distance</span> bookings
-              only when actual trip exceeds estimate.
+              <span className="text-white font-medium">standard Distance</span>{" "}
+              bookings only when actual trip exceeds estimate.
             </p>
             <Field
               label="Free Grace Period"
@@ -519,13 +498,12 @@ export const AdminBookingSettings: React.FC = () => {
               </h3>
             </div>
             <p className="text-xs text-text-sub mb-4">
-              Choose which duration options appear in the booking page for each
-              service type. The active Fare Rule's{" "}
+              Choose which duration options appear in the booking page. The
+              active Fare Rule's{" "}
               <code className="text-brand-red text-xs">flatRates</code> must
-              include rates for every slot you enable here.
+              include rates for every enabled slot.
             </p>
 
-            {/* Hourly slots */}
             <div className="mb-5">
               <div className="flex items-center justify-between mb-2">
                 <p className="text-xs font-medium text-white">
@@ -542,11 +520,10 @@ export const AdminBookingSettings: React.FC = () => {
                 minSelect={1}
               />
               <p className="text-xs text-text-sub mt-1.5">
-                Select at least 1. Minimum selectable: 1h, maximum: 8h.
+                Select at least 1. Range: 1h–8h.
               </p>
             </div>
 
-            {/* Full Day slots */}
             <div>
               <div className="flex items-center justify-between mb-2">
                 <p className="text-xs font-medium text-white">
@@ -571,10 +548,9 @@ export const AdminBookingSettings: React.FC = () => {
           <div className="flex items-start gap-2 text-xs text-text-sub p-3 bg-white/3 border border-white/8 rounded-xl">
             <Info className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
             Changes are cached for 5 minutes client-side. New bookings after
-            that will use the updated settings.
+            that use the updated settings.
           </div>
 
-          {/* Actions */}
           <div className="flex gap-3">
             <NeonButton
               variant="primary"

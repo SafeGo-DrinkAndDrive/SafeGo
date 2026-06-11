@@ -1,13 +1,13 @@
 // ─── src/services/bookingPolicyService.ts ────────────────────────────────────
-// No logic changes — the new hourlySlots / fullDaySlots fields are simply
-// included in the Firestore document automatically via saveBookingPolicy.
+// Change: immediateBaseFare removed from BookingPolicy.
+// Immediate pricing is now managed entirely through the Firestore
+// /fareRules collection using serviceType == 'Immediate Distance'.
+// This file only handles booking TIME window rules and waiting surcharges.
 // ─────────────────────────────────────────────────────────────────────────────
 import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
 import { db } from "../firebase";
 import { DEFAULT_BOOKING_POLICY } from "../types";
 import type { BookingPolicy, BookingType } from "../types";
-
-// ── Cache ─────────────────────────────────────────────────────────────────────
 
 const TTL = 5 * 60 * 1000;
 let _cache: BookingPolicy | null = null;
@@ -18,15 +18,12 @@ export function clearPolicyCache() {
   _cacheAt = 0;
 }
 
-// ── Firestore ─────────────────────────────────────────────────────────────────
-
 export async function getBookingPolicy(): Promise<BookingPolicy> {
   if (_cache && Date.now() - _cacheAt < TTL) return _cache;
   try {
     const snap = await getDoc(doc(db, "appSettings", "bookingPolicy"));
     if (snap.exists()) {
       const data = snap.data() as BookingPolicy;
-      // Back-fill defaults for old docs that don't have the new slot fields yet
       _cache = {
         ...data,
         hourlySlots: data.hourlySlots ?? DEFAULT_BOOKING_POLICY.hourlySlots,
@@ -36,9 +33,8 @@ export async function getBookingPolicy(): Promise<BookingPolicy> {
       return _cache;
     }
   } catch {
-    /* network error — fall through */
+    /* fallthrough */
   }
-
   return {
     ...DEFAULT_BOOKING_POLICY,
     updatedAt: new Date().toISOString(),
@@ -93,14 +89,14 @@ export function toBookingType(cls: TimeClassification): BookingType {
   return cls === "immediate" ? "immediate" : "standard";
 }
 
-// ── Surcharge ─────────────────────────────────────────────────────────────────
-
 export function calculateWaitingSurcharge(
   extraMins: number,
   policy: BookingPolicy,
 ): number {
   const billable = Math.max(0, extraMins - policy.freeWaitingMins);
   if (billable <= 0) return 0;
-  const blocks = Math.ceil(billable / policy.waitingIntervalMins);
-  return blocks * policy.waitingChargePerInterval;
+  return (
+    Math.ceil(billable / policy.waitingIntervalMins) *
+    policy.waitingChargePerInterval
+  );
 }
