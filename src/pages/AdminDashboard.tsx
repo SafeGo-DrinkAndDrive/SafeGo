@@ -1,9 +1,9 @@
 // ─── src/pages/AdminDashboard.tsx ─────────────────────────────────────────────
-// Added in this version:
-//   • "Settings" tab → AdminBookingSettings panel (booking policy config)
-//   • Date filter: Today / This Week / This Month / All Time
-//   • Booking type badge (standard / immediate) on each booking card
-//   • User detail modal with account management actions
+// Changes:
+//   • "confirmed" status transition records actualStartTime (trip timer starts)
+//   • "completed" shows a confirmation modal before finalising
+//   • Completed cards show finalFare, waitingSurcharge, actualDurationMins
+//   • Revenue uses finalFare for completed bookings
 // ─────────────────────────────────────────────────────────────────────────────
 import React, { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -19,8 +19,8 @@ import {
   MapPin,
   Navigation,
   Calendar,
-  Car,
   Route,
+  Timer,
   Shield,
   ShieldAlert,
   ShieldOff,
@@ -33,6 +33,8 @@ import {
   Ban,
   Zap,
   Settings,
+  PlayCircle,
+  FlagTriangleRight,
 } from "lucide-react";
 import { doc, updateDoc, deleteDoc } from "firebase/firestore";
 import { db } from "../firebase";
@@ -42,25 +44,20 @@ import { AdminFareManager } from "../components/admin/AdminFareManager";
 import { AdminBookingSettings } from "../components/admin/AdminBookingSettings";
 import type { Booking, BookingStatus, AppUser, UserRole } from "../types";
 
-// ── Date filter ───────────────────────────────────────────────────────────────
-
 type DateFilter = "day" | "week" | "month" | "all";
-
 const DATE_FILTERS: { key: DateFilter; label: string }[] = [
   { key: "day", label: "Today" },
   { key: "week", label: "This Week" },
   { key: "month", label: "This Month" },
   { key: "all", label: "All Time" },
 ];
-
 function applyDateFilter(bookings: Booking[], filter: DateFilter): Booking[] {
   if (filter === "all") return bookings;
-  const now = new Date();
   const start = new Date();
   if (filter === "day") {
     start.setHours(0, 0, 0, 0);
   } else if (filter === "week") {
-    start.setDate(now.getDate() - now.getDay());
+    start.setDate(start.getDate() - start.getDay());
     start.setHours(0, 0, 0, 0);
   } else {
     start.setDate(1);
@@ -69,8 +66,6 @@ function applyDateFilter(bookings: Booking[], filter: DateFilter): Booking[] {
   return bookings.filter((b) => new Date(b.createdAt) >= start);
 }
 
-// ── Status ────────────────────────────────────────────────────────────────────
-
 const ALL_STATUSES: BookingStatus[] = [
   "pending",
   "confirmed",
@@ -78,7 +73,6 @@ const ALL_STATUSES: BookingStatus[] = [
   "completed",
   "cancelled",
 ];
-
 const STATUS_STYLE: Record<BookingStatus, string> = {
   pending: "text-yellow-400 bg-yellow-400/10 border-yellow-400/30",
   confirmed: "text-blue-400   bg-blue-400/10   border-blue-400/30",
@@ -86,7 +80,6 @@ const STATUS_STYLE: Record<BookingStatus, string> = {
   completed: "text-green-400  bg-green-400/10  border-green-400/30",
   cancelled: "text-red-400    bg-red-400/10    border-red-400/30",
 };
-
 const NEXT_STATUSES: Record<BookingStatus, BookingStatus[]> = {
   pending: ["confirmed", "cancelled"],
   confirmed: ["ongoing", "cancelled"],
@@ -94,8 +87,266 @@ const NEXT_STATUSES: Record<BookingStatus, BookingStatus[]> = {
   completed: [],
   cancelled: [],
 };
+const TRANSITION_LABELS: Partial<Record<BookingStatus, string>> = {
+  confirmed: "✓ Confirm — Start Timer",
+  ongoing: "▶ Mark Ongoing",
+  completed: "⚑ Complete & Finalise Fare",
+  cancelled: "✕ Cancel",
+};
 
-// ── Stat card ─────────────────────────────────────────────────────────────────
+function fmtDuration(mins?: number): string {
+  if (!mins) return "—";
+  if (mins < 60) return `${mins} min`;
+  return `${Math.floor(mins / 60)}h ${mins % 60}m`;
+}
+
+// ── Completion modal ──────────────────────────────────────────────────────────
+
+const CompleteModal: React.FC<{
+  booking: Booking;
+  onConfirm: () => void;
+  onCancel: () => void;
+  loading: boolean;
+}> = ({ booking, onConfirm, onCancel, loading }) => {
+  const isDistanceStandard =
+    booking.serviceType === "Distance" && booking.bookingType === "standard";
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      onClick={onCancel}
+    >
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
+      <motion.div
+        initial={{ opacity: 0, scale: 0.96, y: 16 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.96, y: 16 }}
+        transition={{ type: "spring", damping: 28, stiffness: 380 }}
+        onClick={(e) => e.stopPropagation()}
+        className="relative w-full max-w-md bg-background-card border border-white/10 rounded-2xl shadow-2xl overflow-hidden z-10"
+      >
+        <div className="flex items-center justify-between px-6 py-4 border-b border-white/8">
+          <h2 className="text-base font-bold text-white flex items-center gap-2">
+            <FlagTriangleRight className="w-4 h-4 text-green-400" /> Complete &
+            Finalise Fare
+          </h2>
+          <button
+            onClick={onCancel}
+            className="p-1.5 rounded-lg text-text-sub hover:text-white hover:bg-white/10 transition-all"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        <div className="px-6 py-5 space-y-4">
+          <p className="text-sm text-text-sub">
+            This will record the trip end time and calculate the final fare.
+          </p>
+          <ul className="space-y-2">
+            <li className="flex items-start gap-2 text-sm">
+              <span className="text-green-400 mt-0.5">•</span>
+              <span className="text-white">Trip end time recorded as now</span>
+            </li>
+            {isDistanceStandard && booking.estimatedDurationMins && (
+              <li className="flex items-start gap-2 text-sm">
+                <span className="text-green-400 mt-0.5">•</span>
+                <span className="text-white">
+                  Waiting surcharge calculated (LKR 300 per 15 min after 15 min
+                  grace)
+                </span>
+              </li>
+            )}
+            <li className="flex items-start gap-2 text-sm">
+              <span className="text-green-400 mt-0.5">•</span>
+              <span className="text-white">
+                Final fare = estimated fare
+                {isDistanceStandard && booking.estimatedDurationMins
+                  ? " + surcharge"
+                  : " (no surcharge for this type)"}
+              </span>
+            </li>
+          </ul>
+          <div className="bg-white/3 border border-white/8 rounded-xl p-4 space-y-2 text-sm">
+            <div className="flex justify-between">
+              <span className="text-text-sub">Estimated fare</span>
+              <span className="text-white font-medium">
+                LKR {booking.fare.toLocaleString()}
+              </span>
+            </div>
+            {booking.estimatedDurationMins && (
+              <div className="flex justify-between">
+                <span className="text-text-sub">Est. duration</span>
+                <span className="text-white">
+                  {fmtDuration(booking.estimatedDurationMins)}
+                </span>
+              </div>
+            )}
+            {booking.actualStartTime && (
+              <div className="flex justify-between">
+                <span className="text-text-sub">Timer started</span>
+                <span className="text-white">
+                  {new Date(booking.actualStartTime).toLocaleTimeString(
+                    "en-LK",
+                    { hour: "2-digit", minute: "2-digit" },
+                  )}
+                </span>
+              </div>
+            )}
+          </div>
+          <div className="flex gap-3 pt-1">
+            <button
+              onClick={onConfirm}
+              disabled={loading}
+              className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl bg-green-500/20 border border-green-500/40 text-green-400 text-sm font-semibold hover:bg-green-500/30 transition-all disabled:opacity-50"
+            >
+              {loading ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Finalising…
+                </>
+              ) : (
+                <>
+                  <FlagTriangleRight className="w-4 h-4" />
+                  Confirm & Complete
+                </>
+              )}
+            </button>
+            <button
+              onClick={onCancel}
+              disabled={loading}
+              className="px-5 py-2.5 rounded-xl border border-white/10 text-text-sub text-sm hover:bg-white/5 hover:text-white transition-all"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+};
+
+// ── Status updater ────────────────────────────────────────────────────────────
+
+const StatusUpdater: React.FC<{
+  booking: Booking;
+  onUpdate: (id: string, status: BookingStatus) => Promise<void>;
+}> = ({ booking, onUpdate }) => {
+  const [loading, setLoading] = useState(false);
+  const [pending, setPending] = useState<BookingStatus | null>(null);
+  const nexts = NEXT_STATUSES[booking.status];
+  if (nexts.length === 0)
+    return (
+      <span
+        className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium border capitalize ${STATUS_STYLE[booking.status]}`}
+      >
+        {booking.status}
+      </span>
+    );
+  const handleSelect = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const next = e.target.value as BookingStatus;
+    if (!next) return;
+    if (next === "completed") {
+      setPending("completed");
+    } else {
+      doUpdate(next);
+    }
+  };
+  const doUpdate = async (status: BookingStatus) => {
+    setLoading(true);
+    setPending(null);
+    try {
+      await onUpdate(booking.id, status);
+    } finally {
+      setLoading(false);
+    }
+  };
+  return (
+    <>
+      <div className="flex items-center gap-2">
+        <span
+          className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium border capitalize ${STATUS_STYLE[booking.status]}`}
+        >
+          {booking.status}
+        </span>
+        <div className="relative">
+          <select
+            onChange={handleSelect}
+            disabled={loading}
+            defaultValue=""
+            key={booking.status}
+            className="appearance-none text-xs bg-white/5 border border-white/15 rounded-lg pl-2 pr-6 py-1 text-text-sub hover:bg-white/10 cursor-pointer disabled:opacity-50 outline-none"
+          >
+            <option value="" disabled>
+              Move to…
+            </option>
+            {nexts.map((s) => (
+              <option key={s} value={s} className="bg-background">
+                {TRANSITION_LABELS[s] ?? s}
+              </option>
+            ))}
+          </select>
+          <ChevronDown className="absolute right-1 top-1.5 w-3 h-3 text-text-sub pointer-events-none" />
+        </div>
+        {loading && (
+          <RefreshCw className="w-3 h-3 text-text-sub animate-spin" />
+        )}
+      </div>
+      <AnimatePresence>
+        {pending === "completed" && (
+          <CompleteModal
+            booking={booking}
+            loading={loading}
+            onConfirm={() => doUpdate("completed")}
+            onCancel={() => setPending(null)}
+          />
+        )}
+      </AnimatePresence>
+    </>
+  );
+};
+
+// ── Fare badge ────────────────────────────────────────────────────────────────
+
+const FareBadge: React.FC<{ booking: Booking }> = ({ booking }) => {
+  const finalFare = booking.finalFare;
+  const surcharge = booking.waitingSurcharge ?? 0;
+  const displayFare = finalFare ?? booking.fare;
+  const isCompleted = booking.status === "completed";
+  return (
+    <div className="text-right flex-shrink-0">
+      {surcharge > 0 ? (
+        <>
+          <p className="text-lg font-bold text-white">
+            LKR {displayFare.toLocaleString()}
+          </p>
+          <p className="text-xs text-amber-400">
+            +LKR {surcharge.toLocaleString()} waiting
+          </p>
+          <p className="text-xs text-text-sub line-through">
+            LKR {booking.fare.toLocaleString()} est.
+          </p>
+        </>
+      ) : (
+        <>
+          <p
+            className={`text-lg font-bold ${isCompleted && finalFare ? "text-green-400" : "text-white"}`}
+          >
+            LKR {displayFare.toLocaleString()}
+          </p>
+          {isCompleted && finalFare && (
+            <p className="text-xs text-green-400/70">Final fare</p>
+          )}
+        </>
+      )}
+      <p className="text-xs text-text-sub mt-0.5">
+        {new Date(booking.createdAt).toLocaleDateString("en-LK")}
+      </p>
+    </div>
+  );
+};
+
+// ── StatCard / UserModal ──────────────────────────────────────────────────────
 
 const StatCard: React.FC<{
   label: string;
@@ -114,68 +365,6 @@ const StatCard: React.FC<{
   </GlassCard>
 );
 
-// ── Status updater ────────────────────────────────────────────────────────────
-
-const StatusUpdater: React.FC<{
-  booking: Booking;
-  onUpdate: (id: string, status: BookingStatus) => Promise<void>;
-}> = ({ booking, onUpdate }) => {
-  const [loading, setLoading] = useState(false);
-  const nexts = NEXT_STATUSES[booking.status];
-
-  if (nexts.length === 0) {
-    return (
-      <span
-        className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium border capitalize ${STATUS_STYLE[booking.status]}`}
-      >
-        {booking.status}
-      </span>
-    );
-  }
-
-  const handleChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const next = e.target.value as BookingStatus;
-    if (!next) return;
-    setLoading(true);
-    try {
-      await onUpdate(booking.id, next);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="flex items-center gap-2">
-      <span
-        className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium border capitalize ${STATUS_STYLE[booking.status]}`}
-      >
-        {booking.status}
-      </span>
-      <div className="relative">
-        <select
-          onChange={handleChange}
-          disabled={loading}
-          defaultValue=""
-          className="appearance-none text-xs bg-white/5 border border-white/15 rounded-lg pl-2 pr-6 py-1 text-text-sub hover:bg-white/10 cursor-pointer disabled:opacity-50 outline-none"
-        >
-          <option value="" disabled>
-            Move to
-          </option>
-          {nexts.map((s) => (
-            <option key={s} value={s} className="bg-background capitalize">
-              {s}
-            </option>
-          ))}
-        </select>
-        <ChevronDown className="absolute right-1 top-1.5 w-3 h-3 text-text-sub pointer-events-none" />
-      </div>
-      {loading && <RefreshCw className="w-3 h-3 text-text-sub animate-spin" />}
-    </div>
-  );
-};
-
-// ── User detail modal ─────────────────────────────────────────────────────────
-
 const ROLE_LABELS: Record<UserRole, string> = {
   user: "Customer",
   driver: "Driver",
@@ -186,15 +375,13 @@ const ROLE_LABELS: Record<UserRole, string> = {
 const UserModal: React.FC<{
   user: AppUser;
   onClose: () => void;
-  onUpdated: (uid: string, changes: Partial<AppUser>) => void;
+  onUpdated: (uid: string, c: Partial<AppUser>) => void;
   onDeleted: (uid: string) => void;
 }> = ({ user, onClose, onUpdated, onDeleted }) => {
   const [saving, setSaving] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
-
+  const [confirmDel, setConfirmDel] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [ok, setOk] = useState<string | null>(null);
   React.useEffect(() => {
     const h = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -202,41 +389,36 @@ const UserModal: React.FC<{
     document.addEventListener("keydown", h);
     return () => document.removeEventListener("keydown", h);
   }, [onClose]);
-
-  const flash = (msg: string) => {
-    setSuccess(msg);
-    setTimeout(() => setSuccess(null), 3000);
+  const flash = (m: string) => {
+    setOk(m);
+    setTimeout(() => setOk(null), 3000);
   };
-
-  const applyChange = async (changes: Partial<AppUser>) => {
+  const apply = async (c: Partial<AppUser>) => {
     setSaving(true);
-    setError(null);
+    setErr(null);
     try {
-      await updateDoc(doc(db, "users", user.uid), changes);
-      onUpdated(user.uid, changes);
-      flash("User updated.");
+      await updateDoc(doc(db, "users", user.uid), c);
+      onUpdated(user.uid, c);
+      flash("Updated.");
     } catch (e: unknown) {
-      setError((e as Error).message ?? "Update failed.");
+      setErr((e as Error).message);
     } finally {
       setSaving(false);
     }
   };
-
-  const handleDelete = async () => {
-    setDeleting(true);
+  const del = async () => {
+    setSaving(true);
     try {
       await deleteDoc(doc(db, "users", user.uid));
       onDeleted(user.uid);
       onClose();
     } catch (e: unknown) {
-      setError((e as Error).message ?? "Deletion failed.");
-      setDeleting(false);
-      setConfirmDelete(false);
+      setErr((e as Error).message);
+      setSaving(false);
+      setConfirmDel(false);
     }
   };
-
-  const isSuspended = (user as AppUser & { suspended?: boolean }).suspended;
-
+  const suspended = !!(user as AppUser & { suspended?: boolean }).suspended;
   return (
     <motion.div
       initial={{ opacity: 0 }}
@@ -263,9 +445,7 @@ const UserModal: React.FC<{
             <X className="w-5 h-5" />
           </button>
         </div>
-
         <div className="px-6 py-5 space-y-5 max-h-[70vh] overflow-y-auto">
-          {/* Profile */}
           <div className="flex items-center gap-4">
             <div className="w-16 h-16 rounded-full bg-brand-red/20 border border-brand-red/30 flex items-center justify-center overflow-hidden flex-shrink-0">
               {user.photoURL ? (
@@ -293,7 +473,7 @@ const UserModal: React.FC<{
                     verified
                   </span>
                 )}
-                {isSuspended && (
+                {suspended && (
                   <span className="text-xs px-2 py-0.5 bg-red-400/10 text-red-400 rounded-full border border-red-400/20">
                     suspended
                   </span>
@@ -301,8 +481,6 @@ const UserModal: React.FC<{
               </div>
             </div>
           </div>
-
-          {/* Contact */}
           <div className="space-y-2">
             <div className="flex items-center gap-3 text-sm">
               <Mail className="w-4 h-4 text-text-sub flex-shrink-0" />
@@ -326,20 +504,18 @@ const UserModal: React.FC<{
               </span>
             </div>
           </div>
-
-          {/* Feedback */}
-          {success && (
+          {ok && (
             <div className="flex items-center gap-2 text-sm text-green-400 bg-green-400/10 border border-green-400/20 rounded-xl px-4 py-3">
-              <CheckCircle2 className="w-4 h-4 flex-shrink-0" /> {success}
+              <CheckCircle2 className="w-4 h-4" />
+              {ok}
             </div>
           )}
-          {error && (
+          {err && (
             <div className="flex items-center gap-2 text-sm text-red-400 bg-red-400/10 border border-red-400/20 rounded-xl px-4 py-3">
-              <AlertCircle className="w-4 h-4 flex-shrink-0" /> {error}
+              <AlertCircle className="w-4 h-4" />
+              {err}
             </div>
           )}
-
-          {/* Actions */}
           <div>
             <p className="text-xs text-text-sub uppercase tracking-wide mb-3">
               Account Actions
@@ -347,95 +523,91 @@ const UserModal: React.FC<{
             <div className="grid grid-cols-2 gap-2">
               <button
                 onClick={() =>
-                  applyChange({ vehicleRegistered: !user.vehicleRegistered })
+                  apply({ vehicleRegistered: !user.vehicleRegistered })
                 }
                 disabled={saving}
                 className="flex items-center gap-2 py-2.5 px-3 rounded-xl border border-white/10 text-sm text-text-sub hover:bg-white/5 hover:text-white transition-all disabled:opacity-50"
               >
                 <UserCheck className="w-4 h-4 text-blue-400" />
-                {user.vehicleRegistered ? "Unverify" : "Verify"} User
+                {user.vehicleRegistered ? "Unverify" : "Verify"}
               </button>
               <button
                 onClick={() =>
-                  applyChange({ suspended: !isSuspended } as Partial<AppUser>)
+                  apply({ suspended: !suspended } as Partial<AppUser>)
                 }
                 disabled={saving}
                 className="flex items-center gap-2 py-2.5 px-3 rounded-xl border border-white/10 text-sm text-text-sub hover:bg-white/5 hover:text-white transition-all disabled:opacity-50"
               >
                 <ShieldAlert className="w-4 h-4 text-yellow-400" />
-                {isSuspended ? "Unsuspend" : "Suspend"}
+                {suspended ? "Unsuspend" : "Suspend"}
               </button>
               {user.role !== "superAdmin" && (
                 <button
                   onClick={() =>
-                    applyChange({
-                      role: user.role === "admin" ? "user" : "admin",
-                    })
+                    apply({ role: user.role === "admin" ? "user" : "admin" })
                   }
                   disabled={saving}
                   className="flex items-center gap-2 py-2.5 px-3 rounded-xl border border-white/10 text-sm text-text-sub hover:bg-white/5 hover:text-white transition-all disabled:opacity-50"
                 >
                   {user.role === "admin" ? (
                     <>
-                      <ShieldOff className="w-4 h-4 text-orange-400" /> Remove
-                      Admin
+                      <ShieldOff className="w-4 h-4 text-orange-400" />
+                      Remove Admin
                     </>
                   ) : (
                     <>
-                      <Shield className="w-4 h-4 text-green-400" /> Make Admin
+                      <Shield className="w-4 h-4 text-green-400" />
+                      Make Admin
                     </>
                   )}
                 </button>
               )}
               <button
                 onClick={() =>
-                  applyChange({
-                    suspended: true,
-                    role: "user",
-                  } as Partial<AppUser>)
+                  apply({ suspended: true, role: "user" } as Partial<AppUser>)
                 }
                 disabled={saving || user.role === "superAdmin"}
                 className="flex items-center gap-2 py-2.5 px-3 rounded-xl border border-red-500/20 text-sm text-red-400 hover:bg-red-500/10 transition-all disabled:opacity-50"
               >
-                <Ban className="w-4 h-4" /> Ban User
+                <Ban className="w-4 h-4" />
+                Ban
               </button>
             </div>
           </div>
-
-          {/* Danger zone */}
           <div className="border border-red-500/20 rounded-xl p-4">
             <p className="text-xs text-red-400 font-semibold uppercase tracking-wide mb-2">
               Danger Zone
             </p>
-            {!confirmDelete ? (
+            {!confirmDel ? (
               <button
-                onClick={() => setConfirmDelete(true)}
+                onClick={() => setConfirmDel(true)}
                 className="flex items-center gap-2 text-sm text-red-400 hover:text-red-300 transition-colors"
               >
-                <Trash2 className="w-4 h-4" /> Delete Account Permanently
+                <Trash2 className="w-4 h-4" />
+                Delete Account
               </button>
             ) : (
               <div className="space-y-2">
                 <p className="text-xs text-red-300">
-                  This permanently deletes the Firestore profile. Cannot be
-                  undone.
+                  Permanently deletes the Firestore profile.
                 </p>
                 <div className="flex gap-2">
                   <button
-                    onClick={handleDelete}
-                    disabled={deleting}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-500/20 border border-red-500/40 text-red-400 text-xs font-medium hover:bg-red-500/30 transition-all disabled:opacity-50"
+                    onClick={del}
+                    disabled={saving}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-500/20 border border-red-500/40 text-red-400 text-xs font-medium hover:bg-red-500/30 disabled:opacity-50"
                   >
-                    {deleting ? (
+                    {saving ? (
                       <>
-                        <Loader2 className="w-3 h-3 animate-spin" /> Deleting…
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                        Deleting…
                       </>
                     ) : (
                       "Yes, delete permanently"
                     )}
                   </button>
                   <button
-                    onClick={() => setConfirmDelete(false)}
+                    onClick={() => setConfirmDel(false)}
                     className="px-3 py-1.5 rounded-lg border border-white/10 text-text-sub text-xs hover:bg-white/5 transition-all"
                   >
                     Cancel
@@ -450,10 +622,9 @@ const UserModal: React.FC<{
   );
 };
 
-// ── Tab definition ────────────────────────────────────────────────────────────
+// ── Main ──────────────────────────────────────────────────────────────────────
 
 type ActiveTab = "bookings" | "users" | "fares" | "settings";
-
 const TABS: { key: ActiveTab; label: string; icon: React.ReactNode }[] = [
   {
     key: "bookings",
@@ -473,12 +644,9 @@ const TABS: { key: ActiveTab; label: string; icon: React.ReactNode }[] = [
   },
 ];
 
-// ── Main ──────────────────────────────────────────────────────────────────────
-
 export const AdminDashboard: React.FC = () => {
   const { bookings, users, isLoading, error, updateStatus, refresh } =
     useAdmin();
-
   const [activeTab, setActiveTab] = useState<ActiveTab>("bookings");
   const [statusFilter, setStatusFilter] = useState<BookingStatus | "all">(
     "all",
@@ -486,44 +654,38 @@ export const AdminDashboard: React.FC = () => {
   const [dateFilter, setDateFilter] = useState<DateFilter>("all");
   const [selectedUser, setSelectedUser] = useState<AppUser | null>(null);
   const [localUsers, setLocalUsers] = useState<AppUser[]>([]);
-
   React.useEffect(() => {
     setLocalUsers(users);
   }, [users]);
 
-  const dateFiltered = applyDateFilter(bookings, dateFilter);
-  const finalFiltered =
+  const dated = applyDateFilter(bookings, dateFilter);
+  const listed =
     statusFilter === "all"
-      ? dateFiltered
-      : dateFiltered.filter((b) => b.status === statusFilter);
-
+      ? dated
+      : dated.filter((b) => b.status === statusFilter);
+  const revenue = dated
+    .filter((b) => b.status === "completed")
+    .reduce((s, b) => s + (b.finalFare ?? b.fare), 0);
   const stats = {
-    total: dateFiltered.length,
-    pending: dateFiltered.filter((b) => b.status === "pending").length,
-    ongoing: dateFiltered.filter((b) => b.status === "ongoing").length,
-    completed: dateFiltered.filter((b) => b.status === "completed").length,
-    revenue: dateFiltered
-      .filter((b) => b.status === "completed")
-      .reduce((s, b) => s + b.fare, 0),
+    total: dated.length,
+    pending: dated.filter((b) => b.status === "pending").length,
+    ongoing: dated.filter((b) => b.status === "ongoing").length,
+    completed: dated.filter((b) => b.status === "completed").length,
   };
 
-  const handleUserUpdated = (uid: string, changes: Partial<AppUser>) => {
-    setLocalUsers((prev) =>
-      prev.map((u) => (u.uid === uid ? { ...u, ...changes } : u)),
-    );
+  const handleUserUpdated = (uid: string, c: Partial<AppUser>) => {
+    setLocalUsers((p) => p.map((u) => (u.uid === uid ? { ...u, ...c } : u)));
     if (selectedUser?.uid === uid)
-      setSelectedUser((prev) => (prev ? { ...prev, ...changes } : null));
+      setSelectedUser((p) => (p ? { ...p, ...c } : null));
   };
-
   const handleUserDeleted = (uid: string) => {
-    setLocalUsers((prev) => prev.filter((u) => u.uid !== uid));
+    setLocalUsers((p) => p.filter((u) => u.uid !== uid));
     setSelectedUser(null);
   };
 
   return (
     <div className="min-h-[calc(100vh-80px)] py-8 px-4 sm:px-6 lg:px-8">
       <div className="max-w-7xl mx-auto">
-        {/* Header */}
         <div className="mb-8 flex items-end justify-between">
           <div>
             <h1 className="text-3xl font-bold text-white mb-1">
@@ -553,26 +715,19 @@ export const AdminDashboard: React.FC = () => {
           </div>
         )}
 
-        {/* Stats (bookings tab only) */}
         {activeTab === "bookings" && (
           <>
-            {/* Date filter */}
             <div className="flex gap-2 mb-5 flex-wrap">
               {DATE_FILTERS.map(({ key, label }) => (
                 <button
                   key={key}
                   onClick={() => setDateFilter(key)}
-                  className={`px-4 py-1.5 rounded-lg text-sm font-medium border transition-all ${
-                    dateFilter === key
-                      ? "bg-brand-red/20 border-brand-red text-brand-red"
-                      : "bg-white/5 border-white/10 text-text-sub hover:bg-white/10 hover:text-white"
-                  }`}
+                  className={`px-4 py-1.5 rounded-lg text-sm font-medium border transition-all ${dateFilter === key ? "bg-brand-red/20 border-brand-red text-brand-red" : "bg-white/5 border-white/10 text-text-sub hover:bg-white/10 hover:text-white"}`}
                 >
                   {label}
                 </button>
               ))}
             </div>
-
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
               <StatCard
                 label="Total"
@@ -589,7 +744,7 @@ export const AdminDashboard: React.FC = () => {
               <StatCard
                 label="Ongoing"
                 value={stats.ongoing}
-                icon={<RefreshCw className="w-5 h-5 text-blue-400" />}
+                icon={<PlayCircle className="w-5 h-5 text-blue-400" />}
                 color="bg-blue-400/20"
               />
               <StatCard
@@ -599,37 +754,34 @@ export const AdminDashboard: React.FC = () => {
                 color="bg-green-400/20"
               />
             </div>
-
             <GlassCard className="mb-6 p-5">
               <p className="text-sm text-text-sub mb-1">
                 Revenue ·{" "}
                 {DATE_FILTERS.find((f) => f.key === dateFilter)?.label}
               </p>
               <p className="text-3xl font-bold text-white">
-                LKR {stats.revenue.toLocaleString()}
+                LKR {revenue.toLocaleString()}
+              </p>
+              <p className="text-xs text-text-sub mt-1">
+                Completed bookings — uses final fare (including any waiting
+                surcharges)
               </p>
             </GlassCard>
           </>
         )}
 
-        {/* Tab bar */}
         <div className="flex gap-1 mb-6 bg-white/5 rounded-xl p-1 w-fit flex-wrap">
           {TABS.map(({ key, label, icon }) => (
             <button
               key={key}
               onClick={() => setActiveTab(key)}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-                activeTab === key
-                  ? "bg-brand-red/20 text-brand-red"
-                  : "text-text-sub hover:text-white"
-              }`}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${activeTab === key ? "bg-brand-red/20 text-brand-red" : "text-text-sub hover:text-white"}`}
             >
               {icon} {label}
             </button>
           ))}
         </div>
 
-        {/* ── Bookings ── */}
         {activeTab === "bookings" && (
           <div>
             <div className="flex gap-2 flex-wrap mb-5">
@@ -637,29 +789,24 @@ export const AdminDashboard: React.FC = () => {
                 <button
                   key={s}
                   onClick={() => setStatusFilter(s)}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-all capitalize ${
-                    statusFilter === s
-                      ? "bg-brand-red/20 border-brand-red text-brand-red"
-                      : "bg-white/5 border-white/10 text-text-sub hover:bg-white/10"
-                  }`}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-all capitalize ${statusFilter === s ? "bg-brand-red/20 border-brand-red text-brand-red" : "bg-white/5 border-white/10 text-text-sub hover:bg-white/10"}`}
                 >
                   {s}
                   <span className="ml-1.5 opacity-60">
                     (
                     {s === "all"
-                      ? dateFiltered.length
-                      : dateFiltered.filter((b) => b.status === s).length}
+                      ? dated.length
+                      : dated.filter((b) => b.status === s).length}
                     )
                   </span>
                 </button>
               ))}
             </div>
-
             {isLoading ? (
               <div className="flex justify-center py-16">
                 <div className="w-8 h-8 border-2 border-brand-red border-t-transparent rounded-full animate-spin" />
               </div>
-            ) : finalFiltered.length === 0 ? (
+            ) : listed.length === 0 ? (
               <GlassCard>
                 <p className="text-center text-text-sub py-12">
                   No bookings match this filter.
@@ -667,7 +814,7 @@ export const AdminDashboard: React.FC = () => {
               </GlassCard>
             ) : (
               <div className="space-y-3">
-                {finalFiltered.map((b) => (
+                {listed.map((b) => (
                   <motion.div
                     key={b.id}
                     initial={{ opacity: 0, y: 4 }}
@@ -685,10 +832,10 @@ export const AdminDashboard: React.FC = () => {
                               booking={b}
                               onUpdate={updateStatus}
                             />
-                            {/* Booking type badge */}
                             {b.bookingType === "immediate" && (
                               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-amber-400/10 text-amber-400 border border-amber-400/20">
-                                <Zap className="w-3 h-3" /> Immediate
+                                <Zap className="w-3 h-3" />
+                                Immediate
                               </span>
                             )}
                           </div>
@@ -707,38 +854,38 @@ export const AdminDashboard: React.FC = () => {
                           </div>
                           <div className="flex gap-3 mt-2 text-xs text-text-sub flex-wrap">
                             <span className="flex items-center gap-1">
-                              <Car className="w-3 h-3" />
-                              {b.serviceType}
-                              {b.serviceDetail ? ` · ${b.serviceDetail}` : ""}
-                            </span>
-                            <span className="flex items-center gap-1">
-                              <Route className="w-3 h-3" /> {b.distance} km
+                              <Route className="w-3 h-3" />
+                              {b.distance} km
                             </span>
                             {b.estimatedDurationMins && (
                               <span className="flex items-center gap-1">
-                                <Clock className="w-3 h-3" /> ~
-                                {b.estimatedDurationMins} min
+                                <Timer className="w-3 h-3" />
+                                Est. {fmtDuration(b.estimatedDurationMins)}
+                              </span>
+                            )}
+                            {b.actualDurationMins && (
+                              <span className="flex items-center gap-1 text-green-400">
+                                <Timer className="w-3 h-3" />
+                                Actual {fmtDuration(b.actualDurationMins)}
+                              </span>
+                            )}
+                            {b.actualStartTime && (
+                              <span className="flex items-center gap-1 text-blue-400">
+                                <PlayCircle className="w-3 h-3" />
+                                Started{" "}
+                                {new Date(b.actualStartTime).toLocaleTimeString(
+                                  "en-LK",
+                                  { hour: "2-digit", minute: "2-digit" },
+                                )}
                               </span>
                             )}
                             <span className="flex items-center gap-1">
-                              <Calendar className="w-3 h-3" /> {b.scheduledDate}{" "}
-                              {b.scheduledTime}
+                              <Calendar className="w-3 h-3" />
+                              {b.scheduledDate} {b.scheduledTime}
                             </span>
                           </div>
                         </div>
-                        <div className="text-right flex-shrink-0">
-                          <p className="text-xl font-bold text-white">
-                            LKR {b.fare.toLocaleString()}
-                          </p>
-                          {b.waitingSurcharge && b.waitingSurcharge > 0 && (
-                            <p className="text-xs text-amber-400 mt-0.5">
-                              +LKR {b.waitingSurcharge.toLocaleString()} waiting
-                            </p>
-                          )}
-                          <p className="text-xs text-text-sub mt-1">
-                            {new Date(b.createdAt).toLocaleDateString("en-LK")}
-                          </p>
-                        </div>
+                        <FareBadge booking={b} />
                       </div>
                     </GlassCard>
                   </motion.div>
@@ -748,7 +895,6 @@ export const AdminDashboard: React.FC = () => {
           </div>
         )}
 
-        {/* ── Users ── */}
         {activeTab === "users" && (
           <div className="space-y-3">
             {isLoading ? (
@@ -800,11 +946,6 @@ export const AdminDashboard: React.FC = () => {
                               verified
                             </span>
                           )}
-                          {!u.phone && (
-                            <span className="text-xs px-2 py-0.5 bg-yellow-400/10 text-yellow-400 rounded-full border border-yellow-400/20">
-                              no phone
-                            </span>
-                          )}
                         </div>
                         <p className="text-sm text-text-sub truncate">
                           {u.email}
@@ -824,14 +965,10 @@ export const AdminDashboard: React.FC = () => {
           </div>
         )}
 
-        {/* ── Fare Management ── */}
         {activeTab === "fares" && <AdminFareManager />}
-
-        {/* ── Booking Settings ── */}
         {activeTab === "settings" && <AdminBookingSettings />}
       </div>
 
-      {/* User modal */}
       <AnimatePresence>
         {selectedUser && (
           <UserModal

@@ -1,7 +1,5 @@
 // ─── src/types/index.ts ───────────────────────────────────────────────────────
 
-// ── Auth & Users ──────────────────────────────────────────────────────────────
-
 export type UserRole = "user" | "driver" | "admin" | "superAdmin";
 
 export interface AppUser {
@@ -18,8 +16,6 @@ export interface AppUser {
   createdAt: string;
 }
 
-// ── Vehicle ───────────────────────────────────────────────────────────────────
-
 export type VehicleType = "Car" | "SUV" | "Van" | "Pickup";
 
 export interface VehicleInsurance {
@@ -27,12 +23,10 @@ export interface VehicleInsurance {
   policyNumber: string;
   expiryDate: string;
 }
-
 export interface VehicleLicense {
   licenseNumber: string;
   expiryDate: string;
 }
-
 export interface Vehicle {
   id: string;
   userId: string;
@@ -46,8 +40,6 @@ export interface Vehicle {
   license: VehicleLicense;
   createdAt: string;
 }
-
-// ── Bookings ──────────────────────────────────────────────────────────────────
 
 export type ServiceType = "Distance" | "Hourly" | "Full Day";
 export type BookingStatus =
@@ -81,13 +73,22 @@ export interface Booking {
   dropCoords: LatLng;
   distance: number;
   duration?: number;
-  estimatedDurationMins?: number;
-  serviceType: ServiceType;
-  serviceDetail?: string;
-  fare: number;
+
+  // ── Fare tracking ──────────────────────────────────────────────────────────
+  estimatedDurationMins?: number; // from Maps API at booking time
+  fare: number; // estimated fare locked at booking time
+  finalFare?: number; // set on completion = fare + waitingSurcharge
   fareRuleId?: string;
   bookingType: BookingType;
-  waitingSurcharge?: number;
+  waitingSurcharge?: number; // set on completion (Distance/standard only)
+
+  // ── Trip timing ────────────────────────────────────────────────────────────
+  actualStartTime?: string; // ISO — set when status → confirmed
+  actualEndTime?: string; // ISO — set when status → completed
+  actualDurationMins?: number; // computed on completion
+
+  serviceType: ServiceType;
+  serviceDetail?: string;
   status: BookingStatus;
   scheduledDate: string;
   scheduledTime: string;
@@ -137,19 +138,10 @@ export const DEFAULT_BOOKING_POLICY: Omit<
 };
 
 // ── Fare Rules ────────────────────────────────────────────────────────────────
-//
-// FareRuleServiceType is a superset of ServiceType — it adds 'Immediate Distance'
-// as a separate engine for immediate bookings. This keeps the two pricing
-// systems completely independent in Firestore and in admin configuration.
-//
-// Firestore collection: /fareRules
-//   Standard bookings  → query serviceType == 'Distance'
-//   Immediate bookings → query serviceType == 'Immediate Distance'
-//   Hourly/Full Day    → query serviceType == 'Hourly' | 'Full Day'
 
 export type FareRuleServiceType =
-  | "Distance" // standard distance booking
-  | "Immediate Distance" // immediate booking — separate tiers
+  | "Distance"
+  | "Immediate Distance"
   | "Hourly"
   | "Full Day";
 
@@ -173,8 +165,6 @@ export interface FareRule {
   createdBy: string;
 }
 
-// ── Standard fare result (returned by calculateDynamicFare) ───────────────────
-
 export interface FarePricingResult {
   fare: number;
   distanceKm: number;
@@ -190,10 +180,6 @@ export interface FarePricingResult {
   };
 }
 
-// ── Immediate fare result (returned by calculateImmediateFare) ────────────────
-// Completely separate from FarePricingResult — no shared fields that could
-// cause confusion when rendering the fare card.
-
 export interface ImmediateFareResult {
   fare: number;
   distanceKm: number;
@@ -208,8 +194,6 @@ export interface ImmediateFareResult {
     total: number;
   };
 }
-
-// ── Legacy / compat ───────────────────────────────────────────────────────────
 
 export interface FareResult {
   distanceKm: number;

@@ -1,5 +1,7 @@
 // ─── src/hooks/useBookings.ts ─────────────────────────────────────────────────
-// Change: createBooking now accepts bookingType + estimatedDurationMins + fareRuleId
+// Change: updateStatus merges returned Firestore fields (finalFare,
+// waitingSurcharge, actualDurationMins) into local state so MyBookings
+// shows the updated final fare immediately after completion.
 // ─────────────────────────────────────────────────────────────────────────────
 import { useState, useEffect, useCallback } from "react";
 import {
@@ -72,7 +74,6 @@ export function useBookings(): UseBookingsReturn {
     estimatedDurationMins?: number,
   ): Promise<Booking> => {
     if (!user) throw new Error("Not authenticated");
-
     const args: CreateBookingArgs = {
       user: {
         uid: user.uid,
@@ -88,7 +89,6 @@ export function useBookings(): UseBookingsReturn {
       bookingType,
       estimatedDurationMins,
     };
-
     const booking = await firestoreCreateBooking(args);
     setBookings((prev) => [booking, ...prev]);
     return booking;
@@ -98,9 +98,9 @@ export function useBookings(): UseBookingsReturn {
     id: string,
     status: BookingStatus,
   ): Promise<void> => {
-    await firestoreUpdateStatus(id, status);
+    const changes = await firestoreUpdateStatus(id, status);
     setBookings((prev) =>
-      prev.map((b) => (b.id === id ? { ...b, status } : b)),
+      prev.map((b) => (b.id === id ? { ...b, ...changes } : b)),
     );
   };
 

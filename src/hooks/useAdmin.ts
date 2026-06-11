@@ -1,6 +1,8 @@
 // ─── src/hooks/useAdmin.ts ────────────────────────────────────────────────────
-// Fix: firestoreGetAllBookings now returns { bookings, lastDoc } not Booking[].
-// Destructure accordingly.
+// Change: updateStatus now merges the fields returned by firestoreUpdateStatus
+// (actualStartTime, actualEndTime, actualDurationMins, waitingSurcharge,
+// finalFare) into the local bookings state so the dashboard reflects the
+// new values immediately without a full re-fetch.
 // ─────────────────────────────────────────────────────────────────────────────
 import { useState, useEffect, useCallback } from "react";
 import { collection, getDocs, orderBy, query } from "firebase/firestore";
@@ -34,13 +36,12 @@ export function useAdmin() {
     );
 
     Promise.all([
-      // Destructure — firestoreGetAllBookings now returns { bookings, lastDoc }
-      firestoreGetAllBookings(100).then(({ bookings }) => bookings),
+      firestoreGetAllBookings(),
       getDocs(usersQuery).then((snap) =>
         snap.docs.map((d) => ({ uid: d.id, ...d.data() }) as AppUser),
       ),
     ])
-      .then(([b, u]) => {
+      .then(([{ bookings: b }, u]) => {
         if (!cancelled) {
           setBookings(b);
           setUsers(u);
@@ -58,10 +59,15 @@ export function useAdmin() {
     };
   }, [isAdmin, tick]);
 
-  const updateStatus = async (id: string, status: BookingStatus) => {
-    await firestoreUpdateStatus(id, status);
+  const updateStatus = async (
+    id: string,
+    status: BookingStatus,
+  ): Promise<void> => {
+    // firestoreUpdateStatus returns the fields it wrote so we can
+    // merge them into local state immediately (no re-fetch needed)
+    const changes = await firestoreUpdateStatus(id, status);
     setBookings((prev) =>
-      prev.map((b) => (b.id === id ? { ...b, status } : b)),
+      prev.map((b) => (b.id === id ? { ...b, ...changes } : b)),
     );
   };
 
