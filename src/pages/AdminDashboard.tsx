@@ -88,8 +88,8 @@ const NEXT_STATUSES: Record<BookingStatus, BookingStatus[]> = {
   cancelled: [],
 };
 const TRANSITION_LABELS: Partial<Record<BookingStatus, string>> = {
-  confirmed: "✓ Confirm — Start Timer",
-  ongoing: "▶ Mark Ongoing",
+  confirmed: "✓ Confirm Booking",
+  ongoing: "▶ Start Trip — Start Timer",
   completed: "⚑ Complete & Finalise Fare",
   cancelled: "✕ Cancel",
 };
@@ -184,7 +184,7 @@ const CompleteModal: React.FC<{
             )}
             {booking.actualStartTime && (
               <div className="flex justify-between">
-                <span className="text-text-sub">Timer started</span>
+                <span className="text-text-sub">Trip started</span>
                 <span className="text-white">
                   {new Date(booking.actualStartTime).toLocaleTimeString(
                     "en-LK",
@@ -872,7 +872,7 @@ export const AdminDashboard: React.FC = () => {
                             {b.actualStartTime && (
                               <span className="flex items-center gap-1 text-blue-400">
                                 <PlayCircle className="w-3 h-3" />
-                                Started{" "}
+                                Trip started{" "}
                                 {new Date(b.actualStartTime).toLocaleTimeString(
                                   "en-LK",
                                   { hour: "2-digit", minute: "2-digit" },

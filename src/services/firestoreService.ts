@@ -135,8 +135,18 @@ export async function firestoreUpdateStatus(
   const now = new Date().toISOString();
   const bookRef = doc(db, "bookings", bookingId);
 
-  // ── confirmed: start the trip clock ──────────────────────────────────────
+  // ── confirmed: no time logic — driver assigned, not yet started ─────────
   if (status === "confirmed") {
+    await updateDoc(bookRef, {
+      status,
+      updatedAt: now,
+      _serverTs: serverTimestamp(),
+    });
+    return { status };
+  }
+
+  // ── ongoing: driver has arrived, trip starts — record actualStartTime ────
+  if (status === "ongoing") {
     const update = {
       status,
       actualStartTime: now,
