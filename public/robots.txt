@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://safego.lk/sitemap.xml
