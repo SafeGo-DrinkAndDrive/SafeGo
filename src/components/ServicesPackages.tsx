@@ -19,7 +19,7 @@ function buildDistancePrice(rule: FareRule | null): {
   details: string;
 } {
   if (!rule?.tiers?.length) {
-    return { price: "LKR 1,800", details: "Base 10 km + LKR 100/km" };
+    return { price: "LKR 2,500", details: "Base 10 km + LKR 100/km" };
   }
   const sorted = [...rule.tiers].sort((a, b) => a.minKm - b.minKm);
   const firstTier = sorted[0];
